@@ -1,6 +1,6 @@
 extends CharacterBody2D
 
-signal crashed
+signal wrapped
 
 const SPEED := 200.0
 const GRAVITY := 1800.0
@@ -19,6 +19,11 @@ func start(at: Vector2) -> void:
 	running = true
 
 
+func stop() -> void:
+	running = false
+	velocity = Vector2.ZERO
+
+
 func flip() -> void:
 	gravity_dir = -gravity_dir
 
@@ -33,3 +38,4 @@ func _physics_process(delta: float) -> void:
 	# horizontal movement stays continuous. Vertical position and gravity are kept.
 	if position.x >= play_rect.end.x:
 		position.x -= play_rect.size.x
+		wrapped.emit()
