@@ -15,16 +15,16 @@ const HazardScene := preload("res://scenes/hazard.tscn")
 # Hazards alternate ground, ceiling, so the player must keep flipping gravity.
 const PATTERNS := [
 	[
-		{"ceiling": false, "x": 0.50, "w": 30.0, "h": 120.0},
-		{"ceiling": true, "x": 0.90, "w": 30.0, "h": 120.0},
+		{"ceiling": false, "x": 0.45, "w": 30.0, "h": 120.0},
+		{"ceiling": true, "x": 0.93, "w": 30.0, "h": 120.0},
 	],
 	[
-		{"ceiling": false, "x": 0.50, "w": 40.0, "h": 160.0},
-		{"ceiling": true, "x": 0.90, "w": 40.0, "h": 160.0},
+		{"ceiling": false, "x": 0.45, "w": 40.0, "h": 160.0},
+		{"ceiling": true, "x": 0.93, "w": 40.0, "h": 160.0},
 	],
 	[
-		{"ceiling": false, "x": 0.55, "w": 30.0, "h": 180.0},
-		{"ceiling": true, "x": 0.92, "w": 50.0, "h": 160.0},
+		{"ceiling": false, "x": 0.48, "w": 30.0, "h": 180.0},
+		{"ceiling": true, "x": 0.93, "w": 50.0, "h": 160.0},
 	],
 ]
 

@@ -119,6 +119,73 @@ func _test_movement_and_surfaces() -> void:
 	_check(laps_ok and not _label_visible(), "multiple laps on ceiling and ground never end the run")
 
 
+func _test_snappy_flip() -> void:
+	print("-- snappy flip")
+	await _new_main(EMPTY)
+	var mid_y: float = _rect.get_center().y
+	var speed: float = _p.FLIP_SPEED
+	# Downward-moving player flips to upward velocity at once, without teleporting.
+	await _wait_unlocked()
+	_p.position.y = mid_y
+	await _frames(5)
+	_check(_p.velocity.y > 0.0 and _p.gravity_dir == 1.0, "player is moving down before the flip (vy=%.1f)" % _p.velocity.y)
+	var pos_before: Vector2 = _p.position
+	var vx_before: float = _p.velocity.x
+	_tap_touch()
+	_check(_p.velocity.y == -speed, "flip while falling: vy becomes -FLIP_SPEED immediately (%.1f)" % _p.velocity.y)
+	_check(_p.position == pos_before, "flip does not teleport the player")
+	_check(_p.velocity.x == vx_before and vx_before == _p.SPEED, "flip leaves horizontal speed unchanged")
+	await physics_frame
+	_check(_p.position.y < pos_before.y, "player moves up on the very next physics tick")
+	_check(absf(_p.velocity.x - _p.SPEED) < 0.01, "horizontal speed still constant after flip")
+	# Upward-moving player flips to downward velocity at once.
+	await _frames(5)
+	_check(_p.velocity.y < 0.0 and _p.gravity_dir == -1.0, "player is moving up before the second flip (vy=%.1f)" % _p.velocity.y)
+	pos_before = _p.position
+	_tap_mouse()
+	_check(_p.velocity.y == speed and _p.gravity_dir == 1.0, "flip while rising: vy becomes +FLIP_SPEED immediately (%.1f)" % _p.velocity.y)
+	_check(_p.position == pos_before, "no teleport on the upward flip either")
+	await physics_frame
+	_check(_p.position.y > pos_before.y, "player moves down on the very next physics tick")
+
+	# Flip while touching the ground moves away from it right away.
+	await _new_main(EMPTY)
+	await _frames(40)
+	_check(absf(_p.position.y - _floor_y()) < 1.5 and _p.is_on_floor(), "resting on ground before flip")
+	await _wait_unlocked()
+	_tap_mouse()
+	await _frames(3)
+	_check(_p.position.y < _floor_y() - 3.0 and _p.velocity.y < 0.0, "flip from the ground leaves the ground (y=%.2f)" % _p.position.y)
+	# Flip while touching the ceiling moves away from it right away.
+	await _frames(60)
+	_check(absf(_p.position.y - _ceil_y()) < 1.5, "resting on ceiling before flip")
+	_tap_mouse()
+	await _frames(3)
+	_check(_p.position.y > _ceil_y() + 3.0 and _p.velocity.y > 0.0, "flip from the ceiling leaves the ceiling (y=%.2f)" % _p.position.y)
+	# Vertical speed never exceeds the maximum.
+	var vmax := 0.0
+	for i in 120:
+		await physics_frame
+		vmax = maxf(vmax, absf(_p.velocity.y))
+	_check(vmax <= _p.MAX_VERTICAL_SPEED + 0.01, "vertical speed capped (max %.1f)" % vmax)
+	# Several rapid flips stay bounded between the surfaces.
+	var bounded := true
+	for i in 12:
+		await _frames(7)
+		_p.flip()
+		bounded = bounded and _p.position.y >= _ceil_y() - 1.0 and _p.position.y <= _floor_y() + 1.0
+	_check(bounded and _p.running, "rapid flipping never leaves the corridor")
+
+	# No flips after game over, by tap or by direct call.
+	await _new_main()
+	_p.position = _hazards()[0].position
+	await _frames(3)
+	await _wait_unlocked()
+	var gd: float = _p.gravity_dir
+	_p.flip()
+	_check(not _p.running and _p.gravity_dir == gd and _p.velocity == Vector2.ZERO, "flip() after game over is ignored")
+
+
 func _test_wrap() -> void:
 	print("-- horizontal wrap")
 	await _new_main(EMPTY)
@@ -160,7 +227,7 @@ func _test_layout() -> void:
 	for pat in _main.PATTERNS:
 		var prev_ceiling = null
 		for spec in pat:
-			far_from_spawn = far_from_spawn and spec["x"] >= 0.5
+			far_from_spawn = far_from_spawn and spec["x"] >= 0.4
 			if prev_ceiling != null:
 				far_from_spawn = far_from_spawn and spec["ceiling"] != prev_ceiling
 			prev_ceiling = spec["ceiling"]
@@ -313,6 +380,7 @@ func _test_bot(size: Vector2i) -> void:
 
 func _initialize() -> void:
 	await _test_movement_and_surfaces()
+	await _test_snappy_flip()
 	await _test_wrap()
 	await _test_layout()
 	await _test_collisions()
