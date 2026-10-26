@@ -1,6 +1,7 @@
 [gd_scene format=3 uid="uid://cqow47bch5ocs"]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="Script" path="res://scripts/player.gd" id="2_player"]
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_player"]
 size = Vector2(32, 32)
@@ -16,6 +17,7 @@ script = ExtResource("1_main")
 
 [node name="Player" type="CharacterBody2D" parent="."]
 position = Vector2(240, 427)
+script = ExtResource("2_player")
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="Player"]
 shape = SubResource("RectangleShape2D_player")
@@ -52,3 +54,13 @@ offset_top = -20.0
 offset_right = 240.0
 offset_bottom = 20.0
 color = Color(0.9, 0.4, 0.5, 1)
+
+[node name="GameOverLabel" type="Label" parent="."]
+visible = false
+offset_right = 480.0
+offset_bottom = 80.0
+theme_override_font_sizes/font_size = 28
+text = "Game Over
+Tap to restart"
+horizontal_alignment = 1
+vertical_alignment = 1
