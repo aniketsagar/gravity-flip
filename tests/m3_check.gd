@@ -1,6 +1,7 @@
 extends SceneTree
 
-# Headless checks for the M3 loop (movement, flip, wrap, hazards, game over, restart, input).
+# Headless checks for the scrolling loop (fixed player, scrolling hazards, flip, hazards,
+# game over, restart, input, resize).
 #   godot --headless --path <project> --script res://tests/m3_check.gd
 # Exits 0 when every check passes, 1 otherwise.
 #
@@ -10,6 +11,7 @@ extends SceneTree
 
 const HALF := 16.0
 const EMPTY := [[]]
+const START_X := 40.0
 
 var _failures := 0
 var _main: Node
@@ -85,20 +87,24 @@ func _wait_unlocked() -> void:
 	await _frames(40)
 
 
+func _px_per_tick() -> float:
+	return _main.SCROLL_SPEED / Engine.physics_ticks_per_second
+
+
 func _test_movement_and_surfaces() -> void:
-	print("-- movement, flip, safe surfaces (no hazards)")
+	print("-- fixed player, scroll, flip, safe surfaces (no hazards)")
 	await _new_main(EMPTY)
 	_check(_p.running and _p.gravity_dir == 1.0, "run starts running with gravity down")
 	var x0: float = _p.position.x
+	_check(absf(x0 - (_rect.position.x + START_X)) < 0.01, "player starts at START_MARGIN")
 	await _frames(40)
-	_check(_p.position.x > x0, "moves right")
+	_check(_p.position.x == x0 and _p.velocity.x == 0.0, "player does not move horizontally")
 	await _frames(60)
 	_check(absf(_p.position.y - _floor_y()) < 1.5, "rests on ground (y=%.2f, expected %.2f)" % [_p.position.y, _floor_y()])
 	_check(_p.running and not _label_visible(), "ground contact is safe")
-	var xa: float = _p.position.x
+	var sa: float = _main._scroll
 	await _frames(30)
-	var expected: float = _p.SPEED * 30.0 / Engine.physics_ticks_per_second
-	_check(absf(fposmod(_p.position.x - xa, _rect.size.x) - expected) < 0.5, "constant horizontal speed")
+	_check(absf((_main._scroll - sa) - _px_per_tick() * 30.0) < 0.001, "world scrolls at constant SCROLL_SPEED")
 
 	_tap_mouse()
 	_check(_p.gravity_dir == -1.0, "mouse click flips gravity up")
@@ -111,12 +117,14 @@ func _test_movement_and_surfaces() -> void:
 	_check(_p.running and not _label_visible(), "ceiling contact is safe")
 
 	var laps_ok := true
+	var s0: float = _main._scroll
 	for i in 2:
 		for j in 900:
 			await physics_frame
-			laps_ok = laps_ok and _p.running and _p.position.x >= _rect.position.x and _p.position.x < _rect.end.x
+			laps_ok = laps_ok and _p.running and _p.position.x == x0
 		_tap_mouse()
-	_check(laps_ok and not _label_visible(), "multiple laps on ceiling and ground never end the run")
+	_check(laps_ok and not _label_visible() and _main._scroll - s0 > 2.0 * _rect.size.x,
+			"multiple laps on ceiling and ground never end the run")
 
 
 func _test_snappy_flip() -> void:
@@ -130,14 +138,14 @@ func _test_snappy_flip() -> void:
 	await _frames(5)
 	_check(_p.velocity.y > 0.0 and _p.gravity_dir == 1.0, "player is moving down before the flip (vy=%.1f)" % _p.velocity.y)
 	var pos_before: Vector2 = _p.position
-	var vx_before: float = _p.velocity.x
+	var x_before: float = _p.position.x
 	_tap_touch()
 	_check(_p.velocity.y == -speed, "flip while falling: vy becomes -FLIP_SPEED immediately (%.1f)" % _p.velocity.y)
 	_check(_p.position == pos_before, "flip does not teleport the player")
-	_check(_p.velocity.x == vx_before and vx_before == _p.SPEED, "flip leaves horizontal speed unchanged")
+	_check(_p.velocity.x == 0.0, "flip adds no horizontal speed")
 	await physics_frame
 	_check(_p.position.y < pos_before.y, "player moves up on the very next physics tick")
-	_check(absf(_p.velocity.x - _p.SPEED) < 0.01, "horizontal speed still constant after flip")
+	_check(_p.position.x == x_before and _p.velocity.x == 0.0, "player x still fixed after flip")
 	# Upward-moving player flips to downward velocity at once.
 	await _frames(5)
 	_check(_p.velocity.y < 0.0 and _p.gravity_dir == -1.0, "player is moving up before the second flip (vy=%.1f)" % _p.velocity.y)
@@ -186,32 +194,48 @@ func _test_snappy_flip() -> void:
 	_check(not _p.running and _p.gravity_dir == gd and _p.velocity == Vector2.ZERO, "flip() after game over is ignored")
 
 
-func _test_wrap() -> void:
-	print("-- horizontal wrap")
-	await _new_main(EMPTY)
-	await _frames(120)
-	var gdir: float = _p.gravity_dir
-	var y_before: float = _p.position.y
-	_p.position.x = _rect.end.x - 1.0
-	await physics_frame
-	_check(_p.position.x < _rect.position.x + _p.SPEED / 30.0, "wraps to left edge (x=%.2f)" % _p.position.x)
-	_check(absf(_p.position.y - y_before) < 1.5, "vertical position kept on wrap")
-	_check(_p.gravity_dir == gdir, "gravity direction kept on wrap")
-	var step: float = _p.SPEED / Engine.physics_ticks_per_second
-	_check(absf(_p.position.x - (_rect.position.x + step - 1.0)) < 0.01, "overshoot carried over wrap (x=%.3f)" % _p.position.x)
-	var xw: float = _p.position.x
-	await _frames(10)
-	_check(_p.position.x > xw, "keeps moving right after wrap")
-
+func _test_scroll() -> void:
+	print("-- hazard scrolling")
 	await _new_main()
-	_check(_main._pattern_index == 0 and _hazards().size() == 2, "real patterns: starts on pattern 0 with 2 hazards")
-	_p.position.x = _rect.end.x - 1.0
-	_p.position.y = _ceil_y() + 200.0
+	var hs := _hazards()
+	var spec0: Dictionary = _main.PATTERNS[0][0]
+	_check(_main._scroll < 2.0 * _px_per_tick() + 0.001 and hs.size() == 2, "run starts with scroll ~0 and pattern 0's 2 hazards")
+	_check(absf(hs[0].position.x - (_rect.position.x + _rect.size.x * spec0["x"] - _main._scroll)) < 0.01, "pattern 0 hazards at their start positions")
+	var xs := [hs[0].position.x, hs[1].position.x]
+	await _frames(30)
+	var moved: float = _px_per_tick() * 30.0
+	_check(absf(hs[0].position.x - (xs[0] - moved)) < 0.001 and absf(hs[1].position.x - (xs[1] - moved)) < 0.001,
+			"hazards move left at SCROLL_SPEED")
+	_check(not _label_visible(), "still running")
+
+	# Scroll to the next lap: pattern 1 hazards come in from beyond the right edge.
+	await _new_main()
+	var spec1: Dictionary = _main.PATTERNS[1][0]
+	# Put pattern 1's first hazard ~50px beyond the right edge, inside the spawn window.
+	_main._scroll = _rect.size.x * spec1["x"] - spec1["w"] / 2.0 - 50.0
 	await physics_frame
-	_check(_main._pattern_index == 1, "wrap advances to pattern 1")
-	await process_frame
-	_check(_hazards().size() == 2 and absf(_hazards()[0].position.x - (_rect.position.x + _rect.size.x * _main.PATTERNS[1][0]["x"])) < 0.01,
-			"hazards re-placed for pattern 1")
+	var entering = null
+	for h in _hazards():
+		if h.x_frac >= 1.0:
+			entering = h
+	_check(entering != null and entering.position.x - entering.size.x / 2.0 > _rect.end.x,
+			"next lap's hazard spawns beyond the right edge")
+	_check(entering != null and absf(entering.x_frac - (1.0 + spec1["x"])) < 0.0001 and entering.size == Vector2(spec1["w"], spec1["h"]),
+			"...with pattern 1's first spec")
+
+	# Hazards that have left the screen are removed.
+	await _new_main()
+	_main._scroll = _rect.size.x
+	await physics_frame
+	var gone := true
+	for h in _hazards():
+		gone = gone and h.position.x + h.size.x / 2.0 >= _rect.position.x
+	_check(gone and _hazards().size() <= 3, "hazards left of the screen are removed (%d alive)" % _hazards().size())
+
+	# Empty pattern list never hangs spawning and creates no hazards.
+	await _new_main(EMPTY)
+	await _frames(30)
+	_check(_hazards().size() == 0 and _p.running, "empty pattern list: no hazards, no hang")
 
 
 func _test_layout() -> void:
@@ -242,6 +266,12 @@ func _test_layout() -> void:
 	_check(distinct, "hazard colour differs clearly from ground, ceiling and player")
 
 
+# Scrolls the world so the hazard's left edge is `gap` px ahead of the player's right edge.
+func _scroll_to_gap(h, gap: float) -> void:
+	_main._scroll += (h.position.x - h.size.x / 2.0) - (_p.position.x + HALF) - gap
+	_main._refresh_hazards()
+
+
 func _test_collisions() -> void:
 	print("-- hazard collisions and game over")
 	for ceiling_hazard in [false, true]:
@@ -259,57 +289,67 @@ func _test_collisions() -> void:
 
 	# Hit by actually driving into the hazard: with no input the run ends at the first ground hazard.
 	await _new_main()
+	var h0 = _hazards()[0]
 	for i in 600:
 		if not _p.running:
 			break
 		await physics_frame
-	_check(not _p.running and _main._pattern_index == 0, "no input: run ends at a hazard in lap 1")
-	var h0 = _hazards()[0]
-	_check(absf(_p.position.x - (h0.position.x - h0.size.x / 2.0 - HALF)) < 8.0, "...driving into the first ground hazard (x=%.1f)" % _p.position.x)
+	_check(not _p.running and _main._scroll < _rect.size.x, "no input: run ends at a hazard in lap 1")
+	_check(not h0.ceiling_side and absf(h0.position.x - h0.size.x / 2.0 - (_p.position.x + HALF)) < 8.0,
+			"...scrolling into the first ground hazard (gap=%.1f)" % (h0.position.x - h0.size.x / 2.0 - (_p.position.x + HALF)))
 
 	# Sitting on the ceiling is also deadly: ceiling hazard ends that run.
 	await _new_main()
+	var h1 = _hazards()[1]
 	await _wait_unlocked()
 	_tap_touch()
 	for i in 600:
 		if not _p.running:
 			break
 		await physics_frame
-	var h1 = _hazards()[1]
-	_check(not _p.running and _p.gravity_dir == -1.0 and _p.position.x > h1.position.x - h1.size.x - HALF,
+	_check(not _p.running and _p.gravity_dir == -1.0 and h1.ceiling_side
+			and absf(h1.position.x - h1.size.x / 2.0 - (_p.position.x + HALF)) < 8.0,
 			"staying on the ceiling ends the run at the ceiling hazard")
 
 	# Safe surfaces next to hazards do not trigger game over.
 	await _new_main()
 	var g = _hazards()[0]
-	_p.position = Vector2(g.position.x - g.size.x / 2.0 - HALF - 50.0, _floor_y())
+	_scroll_to_gap(g, 50.0)
 	await _frames(5)
 	_check(_p.running and not _label_visible(), "resting on ground just before a ground hazard is safe")
 	await _new_main()
 	var c = _hazards()[1]
 	_p.flip()
-	_p.position = Vector2(c.position.x - c.size.x / 2.0 - HALF - 50.0, _ceil_y())
+	_p.position.y = _ceil_y()
+	_scroll_to_gap(c, 50.0)
 	await _frames(5)
 	_check(_p.running and not _label_visible(), "resting on ceiling just before a ceiling hazard is safe")
 	await _new_main()
 	g = _hazards()[0]
-	_p.position = Vector2(g.position.x, _ceil_y() + 5.0)
+	# Get the player up to the ceiling first, then let the ground hazard pass underneath.
+	_p.position.y = _ceil_y() + 5.0
 	_p.flip()
 	await _frames(3)
-	_check(_p.running and not _label_visible(), "passing over a ground hazard near the ceiling is safe")
+	_scroll_to_gap(g, -g.size.x / 2.0 - HALF)
+	await _frames(3)
+	_check(_p.running and not _label_visible(), "passing over a ground hazard near the ceiling is safe (p=%s g=%s scroll=%.1f)" % [_p.position, g.position, _main._scroll])
 
 
 func _test_restart_and_input() -> void:
 	print("-- restart and input")
 	await _new_main()
-	# advance to a later pattern, crash, then restart
-	_p.position.x = _rect.end.x - 1.0
+	# scroll on to a later pattern, crash, then restart
+	_main._scroll = _rect.size.x * 1.2
 	_p.position.y = _ceil_y() + 200.0
 	await _frames(3)
 	var h = _hazards()[0]
+	_check(int(floorf(h.x_frac)) == 1, "scrolled into pattern 1's hazards")
 	_p.position = h.position
 	await _frames(3)
-	_check(not _p.running and _main._pattern_index == 1, "crashed in pattern 1")
+	_check(not _p.running and _main._scroll > _rect.size.x, "crashed in pattern 1")
+	var frozen: float = _main._scroll
+	await _frames(10)
+	_check(_main._scroll == frozen, "scroll stops at game over")
 
 	_tap_mouse()
 	_check(not _p.running and _label_visible(), "tap right after game over is ignored (anti-skip delay)")
@@ -318,8 +358,8 @@ func _test_restart_and_input() -> void:
 	_check(_p.running and not _label_visible(), "tap after the delay restarts the run")
 	_check(_p.gravity_dir == 1.0, "restart tap did not flip gravity")
 	_check(_p.velocity == Vector2.ZERO, "player velocity reset")
-	_check(absf(_p.position.x - (_rect.position.x + 40.0)) < 0.01 and absf(_p.position.y - _floor_y()) < 0.01, "player position reset (on the ground)")
-	_check(_main._pattern_index == 0, "pattern reset to 0")
+	_check(absf(_p.position.x - (_rect.position.x + START_X)) < 0.01 and absf(_p.position.y - _floor_y()) < 0.01, "player position reset (on the ground)")
+	_check(_main._scroll == 0.0 and _main._spawn_lap <= 1, "scroll reset to 0 and spawning restarted at pattern 0")
 	var first = _hazards()[0]
 	_check(absf(first.position.x - (_rect.position.x + _rect.size.x * _main.PATTERNS[0][0]["x"])) < 0.01 and _hazards().size() == 2, "hazards back at pattern 0 positions")
 
@@ -364,27 +404,102 @@ func _bot_tap(ground_lead: float, ceiling_lead: float) -> void:
 		_tap_touch()
 
 
-func _test_bot(size: Vector2i) -> void:
+# Runs the bot for `laps` laps of scrolling while recording what happens to hazards.
+func _run_bot(size: Vector2i, laps: float) -> Dictionary:
 	await _set_window(size)
 	await _new_main()
-	var laps := [0]
-	_p.wrapped.connect(func(): laps[0] += 1)
-	var frames := 0
-	while _p.running and laps[0] < 6 and frames < 4000:
+	var r := {"frames": 0, "spawned": [], "continuous": true, "entered_offscreen": true,
+			"pruned_offscreen": true, "max_alive": 0}
+	var last_x := {}   # hazard instance id -> last observed position.x
+	var last_w := {}   # hazard instance id -> width
+	for h in _hazards():
+		last_x[h.get_instance_id()] = h.position.x
+		last_w[h.get_instance_id()] = h.size.x
+	var step := _px_per_tick()
+	while _p.running and _main._scroll < laps * _rect.size.x and r["frames"] < 6000:
 		_bot_tap(100.0, 200.0)
 		await physics_frame
-		frames += 1
-	_check(_p.running and laps[0] >= 6 and not _label_visible(),
-			"bot dodges all patterns for 6 laps at %s (visible %s, %d ticks, running=%s, laps=%d, pattern=%d, pos=%s)" % [size, _rect.size, frames, _p.running, laps[0], _main._pattern_index, _p.position])
+		r["frames"] += 1
+		var alive := {}
+		for h in _hazards():
+			var id: int = h.get_instance_id()
+			alive[id] = true
+			if last_x.has(id):
+				r["continuous"] = r["continuous"] and absf((last_x[id] - h.position.x) - step) < 0.001
+			else:
+				r["entered_offscreen"] = r["entered_offscreen"] and h.position.x - h.size.x / 2.0 >= _rect.end.x
+				r["spawned"].append({"x": h.x_frac, "w": h.size.x, "h": h.size.y, "ceiling": h.ceiling_side})
+				last_w[id] = h.size.x
+			last_x[id] = h.position.x
+		for id in last_x.keys():
+			if not alive.has(id):
+				# Removed: its right edge must have just crossed the left edge.
+				r["pruned_offscreen"] = r["pruned_offscreen"] and last_x[id] + last_w[id] / 2.0 < _rect.position.x + step + 0.001
+				last_x.erase(id)
+		r["max_alive"] = maxi(r["max_alive"], alive.size())
+	r["running"] = _p.running
+	r["laps"] = _main._scroll / _rect.size.x
+	return r
+
+
+func _test_bot(size: Vector2i) -> void:
+	var r := await _run_bot(size, 6.0)
+	_check(r["running"] and r["laps"] >= 6.0 and not _label_visible(),
+			"bot dodges all patterns for 6 laps at %s (visible %s, %d ticks, running=%s, laps=%.2f, pos=%s)" % [size, _rect.size, r["frames"], r["running"], r["laps"], _p.position])
+
+
+func _test_scroll_lifecycle() -> void:
+	print("-- scroll continuity and pattern sequence (bot run, 540x960)")
+	var r := await _run_bot(Vector2i(540, 960), 6.0)
+	_check(r["running"], "bot survives the run used for lifecycle checks")
+	_check(r["continuous"], "every hazard moves exactly SCROLL_SPEED per tick (no pops or jumps)")
+	_check(r["entered_offscreen"], "every new hazard spawns fully beyond the right edge")
+	_check(r["pruned_offscreen"], "every hazard is removed only after fully leaving the left edge")
+	_check(r["max_alive"] <= 4, "at most a few hazards alive at once (max %d)" % r["max_alive"])
+	var expected := []
+	var lap := 0
+	while expected.size() < r["spawned"].size() + 2:
+		for spec in _main.PATTERNS[lap % _main.PATTERNS.size()]:
+			expected.append({"x": lap + spec["x"], "w": spec["w"], "h": spec["h"], "ceiling": spec["ceiling"]})
+		lap += 1
+	var seq_ok: bool = r["spawned"].size() >= 6
+	for i in r["spawned"].size():
+		var a: Dictionary = r["spawned"][i]
+		var e: Dictionary = expected[i + 2]  # the first 2 hazards exist at run start, before observation
+		seq_ok = seq_ok and absf(a["x"] - e["x"]) < 0.0001 and a["w"] == e["w"] and a["h"] == e["h"] and a["ceiling"] == e["ceiling"]
+	_check(seq_ok, "spawned hazards follow the pattern sequence with consistent spacing (%d spawned)" % r["spawned"].size())
+
+
+func _test_resize() -> void:
+	print("-- viewport resize")
+	await _set_window(Vector2i(480, 854))
+	await _new_main()
+	await _frames(10)
+	await _set_window(Vector2i(540, 1200))
+	_rect = root.get_visible_rect()
+	await _frames(2)
+	var ok := true
+	for h in _hazards():
+		var y: float = _rect.end.y - 40.0 - h.size.y / 2.0
+		if h.ceiling_side:
+			y = _rect.position.y + 40.0 + h.size.y / 2.0
+		ok = ok and absf(h.world_x - (_rect.position.x + _rect.size.x * h.x_frac)) < 0.01
+		ok = ok and absf(h.position.x - (h.world_x - _main._scroll)) <= _px_per_tick() + 0.01
+		ok = ok and absf(h.position.y - y) < 0.01
+	_check(ok and _hazards().size() >= 2, "hazards re-placed for the new visible rect, scroll kept")
+	_check(_p.running and not _label_visible(), "resize does not end the run")
+	await _set_window(Vector2i(480, 854))
 
 
 func _initialize() -> void:
 	await _test_movement_and_surfaces()
 	await _test_snappy_flip()
-	await _test_wrap()
+	await _test_scroll()
 	await _test_layout()
 	await _test_collisions()
 	await _test_restart_and_input()
+	await _test_resize()
+	await _test_scroll_lifecycle()
 	print("-- solvability: patterns survivable with flips")
 	await _test_bot(Vector2i(540, 960))
 	await _test_bot(Vector2i(540, 1200))
