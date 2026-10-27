@@ -2,6 +2,7 @@ extends Node2D
 
 const SCROLL_SPEED := 200.0
 const SURFACE_THICKNESS := 40.0
+const ACCENT_THICKNESS := 3.0
 const START_MARGIN := 40.0
 const PLAYER_HALF := 16.0
 # Taps are ignored briefly after a crash (so frantic taps don't skip the game-over
@@ -158,18 +159,23 @@ func _place_hazards() -> void:
 # so place everything from the actual visible rect.
 func _layout() -> void:
 	var rect := get_viewport().get_visible_rect()
-	_place_surface(_ceiling, rect, rect.position.y + SURFACE_THICKNESS / 2.0)
-	_place_surface(_ground, rect, rect.end.y - SURFACE_THICKNESS / 2.0)
+	_place_surface(_ceiling, rect, rect.position.y + SURFACE_THICKNESS / 2.0, false)
+	_place_surface(_ground, rect, rect.end.y - SURFACE_THICKNESS / 2.0, true)
 	_place_hazards()
 	_refresh_hazards()
 	_game_over.position = Vector2(rect.position.x, rect.get_center().y - _game_over.size.y / 2.0)
 	_game_over.size.x = rect.size.x
 
 
-func _place_surface(body: StaticBody2D, rect: Rect2, center_y: float) -> void:
+# accent_on_top puts the thin accent line on the top edge (ground) instead of the bottom (ceiling),
+# so it always runs along the edge facing the play area.
+func _place_surface(body: StaticBody2D, rect: Rect2, center_y: float, accent_on_top: bool) -> void:
 	var size := Vector2(rect.size.x, SURFACE_THICKNESS)
 	body.position = Vector2(rect.get_center().x, center_y)
 	(body.get_node("CollisionShape2D").shape as RectangleShape2D).size = size
 	var visual: ColorRect = body.get_node("Visual")
 	visual.size = size
 	visual.position = -size / 2.0
+	var accent: ColorRect = body.get_node("Accent")
+	accent.size = Vector2(size.x, ACCENT_THICKNESS)
+	accent.position = Vector2(-size.x / 2.0, -size.y / 2.0 if accent_on_top else size.y / 2.0 - ACCENT_THICKNESS)

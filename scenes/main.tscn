@@ -23,12 +23,30 @@ script = ExtResource("2_player")
 [node name="CollisionShape2D" type="CollisionShape2D" parent="Player" unique_id=193951648]
 shape = SubResource("RectangleShape2D_player")
 
+[node name="Halo" type="ColorRect" parent="Player"]
+mouse_filter = 2
+offset_left = -20.0
+offset_top = -20.0
+offset_right = 20.0
+offset_bottom = 20.0
+color = Color(0, 0.96, 1, 0.25)
+
 [node name="Visual" type="ColorRect" parent="Player" unique_id=1707374400]
 offset_left = -16.0
 offset_top = -16.0
 offset_right = 16.0
 offset_bottom = 16.0
-color = Color(0.95, 0.85, 0.2, 1)
+color = Color(0, 0.96, 1, 1)
+
+[node name="Outline" type="ReferenceRect" parent="Player"]
+mouse_filter = 2
+offset_left = -16.0
+offset_top = -16.0
+offset_right = 16.0
+offset_bottom = 16.0
+border_color = Color(0.7, 1, 1, 1)
+border_width = 2.0
+editor_only = false
 
 [node name="Ground" type="StaticBody2D" parent="." unique_id=472901418]
 position = Vector2(240, 834)
@@ -41,7 +59,15 @@ offset_left = -240.0
 offset_top = -20.0
 offset_right = 240.0
 offset_bottom = 20.0
-color = Color(0.3, 0.8, 0.6, 1)
+color = Color(0.07, 0.12, 0.28, 1)
+
+[node name="Accent" type="ColorRect" parent="Ground"]
+mouse_filter = 2
+offset_left = -240.0
+offset_top = -20.0
+offset_right = 240.0
+offset_bottom = -17.0
+color = Color(0, 0.75, 0.85, 1)
 
 [node name="Ceiling" type="StaticBody2D" parent="." unique_id=344784266]
 position = Vector2(240, 20)
@@ -54,7 +80,15 @@ offset_left = -240.0
 offset_top = -20.0
 offset_right = 240.0
 offset_bottom = 20.0
-color = Color(0.35, 0.55, 0.95, 1)
+color = Color(0.07, 0.12, 0.28, 1)
+
+[node name="Accent" type="ColorRect" parent="Ceiling"]
+mouse_filter = 2
+offset_left = -240.0
+offset_top = 17.0
+offset_right = 240.0
+offset_bottom = 20.0
+color = Color(0, 0.75, 0.85, 1)
 
 [node name="Hazards" type="Node2D" parent="." unique_id=955746124]
 
