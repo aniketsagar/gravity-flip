@@ -10,3 +10,5 @@
 # Android signing credentials
 *.keystore
 *.jks
+# Local build output
+/build/
