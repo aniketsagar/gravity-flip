@@ -1,0 +1,11 @@
+# Prompt 015 — G1.2 variable-sized obstacles, implementation (2026-10-27)
+
+Summary of the user's prompt: implement G1.2 as approved in Report 014; inspect first, implement, run tests, review the diff, report actual results; preserve unrelated uncommitted changes; do not commit or push.
+
+- Sizes: height = round(h_frac x P), P = viewport height - 2 x surface thickness (verify the thickness). Small 0.15-0.25, medium 0.30-0.45, large 0.50-0.66, max 0.66; first obstacle small; all inside the playable area.
+- Patterns (len; ground; ceiling; x = centre in px from the pattern origin): P0 480: 15% w30 x216; 20% w30 x446. P1 480: 30% w40 x216; 38% w40 x446. P2 480: 50% w40 x216; 45% w30 x446. P3 500: 25% w50 x216; 55% w40 x466. P4 480: 66% w40 x216; 20% w30 x446. Origin advances by each pattern's actual length, also at the cycle boundary; strict alternation, no horizontal overlap.
+- Clearance: `required_gap >= 32 + 200 * (T_next + 0.3)` for every consecutive pair incl. P4 to P0; first obstacle `left_edge - 56 >= 200 * (t_flip + T_clear)`. Diagnose geometry on failure; never reduce the margin or change physics. Preserve 200 px/s scroll, `MAX_VERTICAL_SPEED = 3000`, player physics, controls, restart, G1.1 spin, neon visuals.
+- Files: `scripts/main.gd`, `scripts/hazard.gd`, `tests/m3_check.gd`. Tests: categories, max height, viewports 480x854 / 480x1066 / 1281x854, bounds, collision/visual alignment, all pair clearances, alternation, first obstacle, 0.3 s-delay bot over several cycles incl. the 66% hazard, negative control, resize, restart, scroll, collisions, input locks, G1.1 rotation. No assertion removed or weakened. Run the full headless suite and `git diff --check`.
+- Deferred (do not investigate or fix): possible first-frame collision from the initial player position; possible stale overlap event after restart. Do not change player positioning, startup sequencing, collision callbacks or restart lifecycle.
+- Out of scope: gravity fields, firing machine, projectiles, random generation, unrelated refactoring.
+- Report: summary and files; pattern clearance results incl. cycle boundaries and viewports; exact commands and pass/fail counts; diff review and unrelated changes; deferred issues; manual playtest checklist. Separate verified results from assumptions.
