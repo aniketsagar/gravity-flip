@@ -10,7 +10,7 @@ extends SceneTree
 # Physics (CharacterBody2D, Area2D overlap) runs for real via physics frames.
 
 const HALF := 16.0
-const EMPTY := [[]]
+const EMPTY := [{"len": 480.0, "hazards": []}]
 const START_X := 40.0
 
 var _failures := 0
@@ -72,6 +72,11 @@ func _hazards() -> Array:
 
 func _label_visible() -> bool:
 	return _main.get_node("GameOverLabel").visible
+
+
+# Playable height: between the inner faces of the ceiling and the ground.
+func _playable() -> float:
+	return _rect.size.y - 2.0 * _main.SURFACE_THICKNESS
 
 
 func _floor_y() -> float:
@@ -198,9 +203,9 @@ func _test_scroll() -> void:
 	print("-- hazard scrolling")
 	await _new_main()
 	var hs := _hazards()
-	var spec0: Dictionary = _main.PATTERNS[0][0]
+	var spec0: Dictionary = _main.PATTERNS[0]["hazards"][0]
 	_check(_main._scroll < 2.0 * _px_per_tick() + 0.001 and hs.size() == 2, "run starts with scroll ~0 and pattern 0's 2 hazards")
-	_check(absf(hs[0].position.x - (_rect.position.x + _rect.size.x * spec0["x"] - _main._scroll)) < 0.01, "pattern 0 hazards at their start positions")
+	_check(absf(hs[0].position.x - (_rect.position.x + spec0["x"] - _main._scroll)) < 0.01, "pattern 0 hazards at their start positions")
 	var xs := [hs[0].position.x, hs[1].position.x]
 	await _frames(30)
 	var moved: float = _px_per_tick() * 30.0
@@ -210,17 +215,18 @@ func _test_scroll() -> void:
 
 	# Scroll to the next lap: pattern 1 hazards come in from beyond the right edge.
 	await _new_main()
-	var spec1: Dictionary = _main.PATTERNS[1][0]
+	var spec1: Dictionary = _main.PATTERNS[1]["hazards"][0]
+	var len0: float = _main.PATTERNS[0]["len"]
 	# Put pattern 1's first hazard ~50px beyond the right edge, inside the spawn window.
-	_main._scroll = _rect.size.x * spec1["x"] - spec1["w"] / 2.0 - 50.0
+	_main._scroll = len0 + spec1["x"] - spec1["w"] / 2.0 - _rect.size.x - 50.0
 	await physics_frame
 	var entering = null
 	for h in _hazards():
-		if h.x_frac >= 1.0:
+		if h.x_px >= len0:
 			entering = h
 	_check(entering != null and entering.position.x - entering.size.x / 2.0 > _rect.end.x,
 			"next lap's hazard spawns beyond the right edge")
-	_check(entering != null and absf(entering.x_frac - (1.0 + spec1["x"])) < 0.0001 and entering.size == Vector2(spec1["w"], spec1["h"]),
+	_check(entering != null and absf(entering.x_px - (len0 + spec1["x"])) < 0.0001 and entering.size == Vector2(spec1["w"], roundf(spec1["h_frac"] * _playable())),
 			"...with pattern 1's first spec")
 
 	# Hazards that have left the screen are removed.
@@ -250,8 +256,8 @@ func _test_layout() -> void:
 	var far_from_spawn := true
 	for pat in _main.PATTERNS:
 		var prev_ceiling = null
-		for spec in pat:
-			far_from_spawn = far_from_spawn and spec["x"] >= 0.4
+		for spec in pat["hazards"]:
+			far_from_spawn = far_from_spawn and spec["x"] >= 192.0
 			if prev_ceiling != null:
 				far_from_spawn = far_from_spawn and spec["ceiling"] != prev_ceiling
 			prev_ceiling = spec["ceiling"]
@@ -301,7 +307,7 @@ func _test_collisions() -> void:
 	# Sitting on the ceiling is also deadly: ceiling hazard ends that run.
 	await _new_main()
 	var h1 = _hazards()[1]
-	await _wait_unlocked()
+	await _frames(10)  # just past the 0.15 s restart lock; the first hazard arrives after ~0.7 s
 	_tap_touch()
 	for i in 600:
 		if not _p.running:
@@ -343,7 +349,7 @@ func _test_restart_and_input() -> void:
 	_p.position.y = _ceil_y() + 200.0
 	await _frames(3)
 	var h = _hazards()[0]
-	_check(int(floorf(h.x_frac)) == 1, "scrolled into pattern 1's hazards")
+	_check(h.x_px >= _main.PATTERNS[0]["len"] and h.x_px < _main.PATTERNS[0]["len"] + _main.PATTERNS[1]["len"], "scrolled into pattern 1's hazards")
 	_p.position = h.position
 	await _frames(3)
 	_check(not _p.running and _main._scroll > _rect.size.x, "crashed in pattern 1")
@@ -359,9 +365,9 @@ func _test_restart_and_input() -> void:
 	_check(_p.gravity_dir == 1.0, "restart tap did not flip gravity")
 	_check(_p.velocity == Vector2.ZERO, "player velocity reset")
 	_check(absf(_p.position.x - (_rect.position.x + START_X)) < 0.01 and absf(_p.position.y - _floor_y()) < 0.01, "player position reset (on the ground)")
-	_check(_main._scroll == 0.0 and _main._spawn_lap <= 1, "scroll reset to 0 and spawning restarted at pattern 0")
+	_check(_main._scroll == 0.0 and _main._spawn_index <= 1, "scroll reset to 0 and spawning restarted at pattern 0")
 	var first = _hazards()[0]
-	_check(absf(first.position.x - (_rect.position.x + _rect.size.x * _main.PATTERNS[0][0]["x"])) < 0.01 and _hazards().size() == 2, "hazards back at pattern 0 positions")
+	_check(absf(first.position.x - (_rect.position.x + _main.PATTERNS[0]["hazards"][0]["x"])) < 0.01 and _hazards().size() == 2, "hazards back at pattern 0 positions")
 
 	# Input immediately after restart must not flip; later taps flip exactly once.
 	_tap_mouse()
@@ -417,7 +423,7 @@ func _run_bot(size: Vector2i, laps: float) -> Dictionary:
 		last_w[h.get_instance_id()] = h.size.x
 	var step := _px_per_tick()
 	while _p.running and _main._scroll < laps * _rect.size.x and r["frames"] < 6000:
-		_bot_tap(100.0, 200.0)
+		_bot_tap(140.0, 200.0)
 		await physics_frame
 		r["frames"] += 1
 		var alive := {}
@@ -428,7 +434,7 @@ func _run_bot(size: Vector2i, laps: float) -> Dictionary:
 				r["continuous"] = r["continuous"] and absf((last_x[id] - h.position.x) - step) < 0.001
 			else:
 				r["entered_offscreen"] = r["entered_offscreen"] and h.position.x - h.size.x / 2.0 >= _rect.end.x
-				r["spawned"].append({"x": h.x_frac, "w": h.size.x, "h": h.size.y, "ceiling": h.ceiling_side})
+				r["spawned"].append({"x": h.x_px, "w": h.size.x, "h": h.size.y, "ceiling": h.ceiling_side})
 				last_w[id] = h.size.x
 			last_x[id] = h.position.x
 		for id in last_x.keys():
@@ -457,11 +463,14 @@ func _test_scroll_lifecycle() -> void:
 	_check(r["pruned_offscreen"], "every hazard is removed only after fully leaving the left edge")
 	_check(r["max_alive"] <= 4, "at most a few hazards alive at once (max %d)" % r["max_alive"])
 	var expected := []
-	var lap := 0
+	var index := 0
+	var origin := 0.0
 	while expected.size() < r["spawned"].size() + 2:
-		for spec in _main.PATTERNS[lap % _main.PATTERNS.size()]:
-			expected.append({"x": lap + spec["x"], "w": spec["w"], "h": spec["h"], "ceiling": spec["ceiling"]})
-		lap += 1
+		var pat: Dictionary = _main.PATTERNS[index % _main.PATTERNS.size()]
+		for spec in pat["hazards"]:
+			expected.append({"x": origin + spec["x"], "w": spec["w"], "h": roundf(spec["h_frac"] * _playable()), "ceiling": spec["ceiling"]})
+		origin += pat["len"]
+		index += 1
 	var seq_ok: bool = r["spawned"].size() >= 6
 	for i in r["spawned"].size():
 		var a: Dictionary = r["spawned"][i]
@@ -483,7 +492,7 @@ func _test_resize() -> void:
 		var y: float = _rect.end.y - 40.0 - h.size.y / 2.0
 		if h.ceiling_side:
 			y = _rect.position.y + 40.0 + h.size.y / 2.0
-		ok = ok and absf(h.world_x - (_rect.position.x + _rect.size.x * h.x_frac)) < 0.01
+		ok = ok and absf(h.world_x - (_rect.position.x + h.x_px)) < 0.01
 		ok = ok and absf(h.position.x - (h.world_x - _main._scroll)) <= _px_per_tick() + 0.01
 		ok = ok and absf(h.position.y - y) < 0.01
 	_check(ok and _hazards().size() >= 2, "hazards re-placed for the new visible rect, scroll kept")
@@ -602,7 +611,7 @@ func _test_rotation() -> void:
 
 	# After game over: no spin from taps, direct flips or the tap lock.
 	await _new_main()
-	await _wait_unlocked()
+	await _frames(10)  # just past the 0.15 s restart lock; the first hazard arrives after ~0.7 s
 	_tap_touch()
 	await _frames(30)
 	_check(absf(_spin_angle() - PI / 2.0) < 0.0001, "one real flip spun the player before the crash")
@@ -625,7 +634,7 @@ func _test_rotation() -> void:
 	_check(_spin_angle() == 0.0 and _spin_in_sync() and _collision_untouched(), "no stale animation after restart")
 
 	# A flip right before a crash, then restart: the old tween must not keep turning the new run.
-	await _wait_unlocked()
+	await _frames(10)  # past the restart lock, before the first hazard arrives (~0.7 s)
 	_tap_mouse()
 	await _frames(2)
 	_p.position = _hazards()[0].position
@@ -637,7 +646,297 @@ func _test_rotation() -> void:
 	_check(_p.running and _spin_angle() == 0.0 and _p._spin_turns == 0, "restart during/after a spin starts at zero rotation and stays there")
 
 
+# --- G1.2: variable-sized obstacles ---
+
+const SCROLL := 200.0
+const REACTION := 0.3
+const PLAYER_W := 32.0
+const G12_WINDOWS := [Vector2i(480, 854), Vector2i(540, 1200), Vector2i(1281, 854)]
+
+
+# Size category by height fraction: small 0.15-0.25, medium 0.30-0.45, large 0.50-0.66.
+func _category(h_frac: float) -> String:
+	var e := 0.000001
+	if h_frac >= 0.15 - e and h_frac <= 0.25 + e:
+		return "small"
+	if h_frac >= 0.30 - e and h_frac <= 0.45 + e:
+		return "medium"
+	if h_frac >= 0.50 - e and h_frac <= 0.66 + e:
+		return "large"
+	return ""
+
+
+func _main_patterns() -> Array:
+	return load("res://scripts/main.gd").PATTERNS
+
+
+# Hazards of the first `cycles` pattern cycles, in pixels from the start of the run.
+func _flat_hazards(patterns: Array, cycles: int) -> Array:
+	var out := []
+	var origin := 0.0
+	for c in cycles:
+		for pat in patterns:
+			for spec in pat["hazards"]:
+				out.append({"left": origin + spec["x"] - spec["w"] / 2.0, "right": origin + spec["x"] + spec["w"] / 2.0,
+						"ceiling": spec["ceiling"], "h_frac": spec["h_frac"], "w": spec["w"]})
+			origin += pat["len"]
+	return out
+
+
+func _cycle_len(patterns: Array) -> float:
+	var total := 0.0
+	for pat in patterns:
+		total += pat["len"]
+	return total
+
+
+func _test_g12_sizes() -> void:
+	print("-- G1.2 size categories and geometry")
+	var seen := {"small": 0, "medium": 0, "large": 0}
+	var all_cat := true
+	var max_frac := 0.0
+	for pat in _main_patterns():
+		for spec in pat["hazards"]:
+			var c := _category(spec["h_frac"])
+			all_cat = all_cat and c != ""
+			if c != "":
+				seen[c] += 1
+			max_frac = maxf(max_frac, spec["h_frac"])
+	_check(all_cat, "every authored hazard is small, medium or large")
+	_check(seen["small"] > 0 and seen["medium"] > 0 and seen["large"] > 0, "all three size categories are used (%s)" % seen)
+	_check(max_frac <= 0.66 + 0.000001 and max_frac > 0.65, "largest authored hazard is 0.66 of the playable height (max %.2f)" % max_frac)
+	var first: Dictionary = _main_patterns()[0]["hazards"][0]
+	_check(_category(first["h_frac"]) == "small" and not first["ceiling"], "first obstacle is a small ground hazard")
+
+	for size in G12_WINDOWS:
+		await _set_window(size)
+		await _new_main(EMPTY)
+		var ground_shape: RectangleShape2D = _main.get_node("Ground/CollisionShape2D").shape
+		var ceil_shape: RectangleShape2D = _main.get_node("Ceiling/CollisionShape2D").shape
+		var top: float = _main.get_node("Ceiling").position.y + ceil_shape.size.y / 2.0
+		var bottom: float = _main.get_node("Ground").position.y - ground_shape.size.y / 2.0
+		_check(ground_shape.size.y == _main.SURFACE_THICKNESS and ceil_shape.size.y == _main.SURFACE_THICKNESS and absf((bottom - top) - _playable()) < 0.01,
+				"%s: playable height %.0f = visible %.0f - 2 x surface thickness (corridor measured from the surfaces: %.0f)" % [size, _playable(), _rect.size.y, bottom - top])
+		var sized := true
+		var inside := true
+		var aligned := true
+		var max_h := 0.0
+		for pat in _main_patterns():
+			for spec in pat["hazards"]:
+				var hz = _main.HazardScene.instantiate()
+				_main.add_child(hz)
+				hz.place(_rect, _main.SURFACE_THICKNESS, spec["ceiling"], spec["x"], spec["w"], spec["h_frac"])
+				sized = sized and hz.size == Vector2(spec["w"], roundf(spec["h_frac"] * _playable()))
+				max_h = maxf(max_h, hz.size.y)
+				var y0: float = hz.position.y - hz.size.y / 2.0
+				var y1: float = hz.position.y + hz.size.y / 2.0
+				inside = inside and y0 >= top - 0.01 and y1 <= bottom + 0.01 and hz.size.y < _playable()
+				inside = inside and absf((y0 - top) if spec["ceiling"] else (y1 - bottom)) < 0.01
+				var shape: RectangleShape2D = hz.get_node("CollisionShape2D").shape
+				var vis: ColorRect = hz.get_node("Visual")
+				var out: ReferenceRect = hz.get_node("Outline")
+				var halo: ColorRect = hz.get_node("Halo")
+				aligned = aligned and shape.size == hz.size and vis.size == hz.size and out.size == hz.size
+				aligned = aligned and halo.size == hz.size + Vector2(8, 8)
+				aligned = aligned and hz.get_node("CollisionShape2D").position == Vector2.ZERO
+				aligned = aligned and vis.position == -hz.size / 2.0 and out.position == -hz.size / 2.0 and halo.position == -halo.size / 2.0
+				hz.queue_free()
+		_check(sized, "%s: hazard height is round(h_frac x playable height) for every spec" % size)
+		_check(max_h <= roundf(0.66 * _playable()) and max_h <= 0.67 * _playable(), "%s: tallest hazard %.0f px <= 66%% of %.0f" % [size, max_h, _playable()])
+		_check(inside, "%s: every hazard sits on its surface, inside the playable area" % size)
+		_check(aligned, "%s: collision, Visual, Outline and Halo geometry agree" % size)
+	await _set_window(Vector2i(480, 854))
+
+
+func _test_g12_pattern_layout() -> void:
+	print("-- G1.2 pattern order, overlap, alternation")
+	var pats := _main_patterns()
+	_check(pats.size() == 5, "five patterns authored")
+	var lens_ok := true
+	var inside := true
+	for pat in pats:
+		for spec in pat["hazards"]:
+			inside = inside and spec["x"] - spec["w"] / 2.0 >= 0.0 and spec["x"] + spec["w"] / 2.0 <= pat["len"]
+		lens_ok = lens_ok and pat["len"] >= 480.0 and pat["hazards"].size() == 2
+	_check(lens_ok and inside, "every pattern has 2 hazards inside its own length")
+	var flat := _flat_hazards(pats, 3)
+	var alternates := true
+	var no_overlap := true
+	for i in range(1, flat.size()):
+		alternates = alternates and flat[i]["ceiling"] != flat[i - 1]["ceiling"]
+		no_overlap = no_overlap and flat[i]["left"] > flat[i - 1]["right"]
+	_check(alternates, "ground/ceiling strictly alternate, including pattern boundaries and the cycle boundary (%d hazards, 3 cycles)" % flat.size())
+	_check(no_overlap, "no two hazards overlap horizontally and the order is increasing")
+	_check(not flat[0]["ceiling"], "the first hazard of a run is on the ground (the player starts on the ground)")
+
+
+# Ticks for the player to rise/fall until its leading edge clears a hazard of height h (+1 px),
+# from rest on the opposite surface, measured with the real Player and Main.
+func _measure_clear_ticks(h: float) -> int:
+	await _new_main(EMPTY)
+	await _frames(90)
+	_p.flip()
+	await _frames(90)
+	_p.flip()
+	var ticks := 0
+	while ticks < 200 and _p.position.y - _ceil_y() < h + 1.0:
+		await physics_frame
+		ticks += 1
+	return ticks if ticks < 200 else -1
+
+
+func _test_g12_clearance() -> void:
+	print("-- G1.2 clearance: gap >= 32 + 200 * (T + 0.3) for every consecutive pair, first-obstacle rule")
+	var flat := _flat_hazards(_main_patterns(), 2)
+	var tps := float(Engine.physics_ticks_per_second)
+	for size in G12_WINDOWS:
+		await _set_window(size)
+		await _new_main(EMPTY)
+		var tick_cache := {}
+		var pairs_ok := true
+		var measured := true
+		var worst_slack := INF
+		var worst_pair := ""
+		for i in flat.size():
+			var h := roundf(flat[i]["h_frac"] * _playable())
+			if not tick_cache.has(h):
+				tick_cache[h] = await _measure_clear_ticks(h)
+			var t: int = tick_cache[h]
+			measured = measured and t > 0
+			if i == 0:
+				# First obstacle: left edge - player right edge >= v * (0.3 s + clear time).
+				var approach: float = flat[0]["left"] - (START_X + HALF)
+				var need0 := SCROLL * (REACTION + t / tps)
+				_check(t > 0 and approach >= need0, "%s: first obstacle approach %.1f px >= %.1f px" % [size, approach, need0])
+				continue
+			var need := PLAYER_W + SCROLL * (t / tps + REACTION)
+			var have: float = flat[i]["left"] - flat[i - 1]["right"]
+			pairs_ok = pairs_ok and have >= need
+			if have - need < worst_slack:
+				worst_slack = have - need
+				worst_pair = "#%d->#%d (h %.0f, %d ticks)" % [i - 1, i, h, t]
+		_check(measured, "%s: clear times measured with the real player for every height (%s)" % [size, tick_cache])
+		_check(pairs_ok, "%s: every consecutive pair incl. the P4->P0 cycle boundary meets the rule (tightest %s, slack %.1f px)" % [size, worst_pair, worst_slack])
+	await _set_window(Vector2i(480, 854))
+
+	# The rule is not vacuous: a pair below even the geometric minimum is rejected.
+	var t66: int = await _measure_clear_ticks(roundf(0.66 * _playable()))
+	var tight := _flat_hazards(_pair_patterns(60.0), 1)
+	var tight_gap: float = tight[1]["left"] - tight[0]["right"]
+	var geometric := PLAYER_W + SCROLL * (t66 / tps)
+	_check(tight_gap < geometric, "negative control: a 60 px gap is below the %.1f px geometric minimum for a 66%% hazard" % geometric)
+
+
+# One pattern: a 0.66 ground hazard then a 0.66 ceiling hazard `gap` px apart (edge to edge).
+func _pair_patterns(gap: float) -> Array:
+	return [{"len": 1000.0, "hazards": [
+		{"ceiling": false, "x": 316.0, "w": 40.0, "h_frac": 0.66},
+		{"ceiling": true, "x": 316.0 + 40.0 + gap, "w": 40.0, "h_frac": 0.66},
+	]}]
+
+
+# Bot with a reaction delay: it flips delay_px of scroll after the player's left edge has passed
+# the previous hazard (for the first hazard, first_px of scroll after the start).
+func _run_delay_bot(patterns: Array, delay_px: float, first_px: float, target_scroll: float) -> Dictionary:
+	await _new_main(patterns)
+	var flat := _flat_hazards(patterns, 12)
+	var n := 0
+	var flips := 0
+	var frames := 0
+	while _p.running and _main._scroll < target_scroll and frames < 12000:
+		var left_world: float = _main._scroll + _p.position.x - HALF - _rect.position.x
+		var trigger: float = (START_X - HALF + first_px) if n == 0 else flat[n - 1]["right"] + delay_px
+		if left_world >= trigger:
+			_tap_touch()
+			flips += 1
+			n += 1
+		await physics_frame
+		frames += 1
+	var player_left: float = _main._scroll + START_X - HALF
+	var large_passed := 0
+	for hz in flat:
+		if hz["right"] < player_left and hz["h_frac"] >= 0.65:
+			large_passed += 1
+	return {"running": _p.running, "scroll": _main._scroll, "flips": flips, "frames": frames,
+			"parity_ok": _p.gravity_dir == (-1.0 if flips % 2 == 1 else 1.0), "large_passed": large_passed}
+
+
+func _test_g12_bot() -> void:
+	print("-- G1.2 bot with 0.3 s reaction delay")
+	var pats := _main_patterns()
+	var cycles := 4
+	var target: float = cycles * _cycle_len(pats)
+	for size in G12_WINDOWS:
+		await _set_window(size)
+		var r := await _run_delay_bot(pats, SCROLL * REACTION, SCROLL * REACTION, target)
+		_check(r["running"] and r["scroll"] >= target and not _label_visible(),
+				"%s: 0.3 s-delay bot survives %d cycles (%.0f px, %d flips, %d ticks, running=%s)" % [size, cycles, r["scroll"], r["flips"], r["frames"], r["running"]])
+		_check(r["parity_ok"] and r["flips"] > 20, "%s: every bot tap was applied (gravity parity ok, %d flips)" % [size, r["flips"]])
+		_check(r["large_passed"] >= cycles - 1, "%s: the 66%% hazard was passed %d times" % [size, r["large_passed"]])
+	await _set_window(Vector2i(480, 854))
+
+	# Controls on the 66% pair: a zero-extra-delay bot (flips the moment it has passed the previous
+	# hazard; 0.2 s after the start for the first).
+	var first := SCROLL * 0.2
+	var tight := await _run_delay_bot(_pair_patterns(60.0), 0.0, first, 1200.0)
+	_check(not tight["running"] and _label_visible(), "negative control: even a zero-delay bot dies when the 66%% pair is only 60 px apart (scroll %.0f)" % tight["scroll"])
+	var roomy := await _run_delay_bot(_pair_patterns(150.0), 0.0, first, 1600.0)
+	_check(roomy["running"] and roomy["scroll"] >= 1600.0 and roomy["flips"] >= 4, "positive control: the same zero-delay bot passes the pair at 150 px (flips %d)" % roomy["flips"])
+
+
+func _test_g12_resize_restart() -> void:
+	print("-- G1.2 resize and restart")
+	await _set_window(Vector2i(480, 854))
+	await _new_main()
+	await _frames(10)
+	await _set_window(Vector2i(540, 1200))
+	_rect = root.get_visible_rect()
+	await _frames(2)
+	var rescaled := _hazards().size() >= 2
+	for h in _hazards():
+		rescaled = rescaled and h.size.y == roundf(h.h_frac * _playable())
+		var shape: RectangleShape2D = h.get_node("CollisionShape2D").shape
+		rescaled = rescaled and shape.size == h.size and h.get_node("Visual").size == h.size
+	_check(rescaled and _p.running, "resize rescales hazard heights from their fractions (playable %.0f) and keeps collision and visuals in sync" % _playable())
+	await _set_window(Vector2i(480, 854))
+	_rect = root.get_visible_rect()
+	await _frames(2)
+	var back := true
+	for h in _hazards():
+		back = back and h.size.y == roundf(h.h_frac * _playable())
+	_check(back, "resizing back restores the original heights (no drift)")
+
+	# Restart: origin, sequence and sizes return to pattern 0.
+	await _new_main()
+	_main._scroll = 3.0 * _cycle_len(_main_patterns()) + 700.0
+	_main._refresh_hazards()
+	_check(_main._spawn_origin > 2000.0 and _main._spawn_index > 5, "run advanced far into later cycles (origin %.0f, index %d)" % [_main._spawn_origin, _main._spawn_index])
+	_main._on_hazard_body_entered(_p)
+	await _wait_unlocked()
+	_tap_mouse()
+	_check(_p.running and _main._scroll == 0.0 and _main._spawn_origin <= _main_patterns()[0]["len"] and _main._spawn_index <= 1,
+			"restart resets scroll, spawn origin and pattern index")
+	var hs := _hazards()
+	var pat0: Dictionary = _main_patterns()[0]
+	var seq_ok := hs.size() == 2
+	for i in mini(hs.size(), 2):
+		var spec: Dictionary = pat0["hazards"][i]
+		seq_ok = seq_ok and hs[i].x_px == spec["x"] and hs[i].ceiling_side == spec["ceiling"] and hs[i].size == Vector2(spec["w"], roundf(spec["h_frac"] * _playable()))
+	_check(seq_ok, "after restart the first hazards are pattern 0's, at their authored positions and sizes")
+	# The next pattern continues at origin = len(pattern 0).
+	_main._scroll = 300.0
+	_main._refresh_hazards()
+	var p1: Dictionary = _main_patterns()[1]["hazards"][0]
+	var found := false
+	for h in _hazards():
+		if absf(h.x_px - (pat0["len"] + p1["x"])) < 0.001:
+			found = h.size == Vector2(p1["w"], roundf(p1["h_frac"] * _playable())) and not h.ceiling_side
+	_check(found, "pattern 1 follows pattern 0 at origin len(P0) after a restart")
+
+
 func _initialize() -> void:
+	# Patterns are in pixels, so the hazards alive at once depend on the width: test at the M52 width.
+	await _set_window(Vector2i(480, 854))
 	await _test_movement_and_surfaces()
 	await _test_snappy_flip()
 	await _test_scroll()
@@ -647,6 +946,11 @@ func _initialize() -> void:
 	await _test_rotation()
 	await _test_resize()
 	await _test_scroll_lifecycle()
+	await _test_g12_sizes()
+	await _test_g12_pattern_layout()
+	await _test_g12_clearance()
+	await _test_g12_bot()
+	await _test_g12_resize_restart()
 	print("-- solvability: patterns survivable with flips")
 	await _test_bot(Vector2i(540, 960))
 	await _test_bot(Vector2i(540, 1200))

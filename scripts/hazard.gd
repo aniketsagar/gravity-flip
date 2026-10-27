@@ -9,19 +9,23 @@ const HALO_ALPHA := 0.25
 var size := Vector2.ZERO
 var ceiling_side := false
 # Placement inputs kept so Main can re-place the hazard after a viewport resize.
-# x_frac may exceed 1.0: the integer part is the lap, the fraction the position within it.
-var x_frac := 0.0
+# x_px is the centre in pixels from the start of the run; h_frac is the height as a
+# fraction of the playable height (between the inner faces of ceiling and ground).
+var x_px := 0.0
+var h_frac := 0.0
 # Unscrolled x; Main sets position.x = world_x - scroll each physics tick.
 var world_x := 0.0
 
 
 # Attaches the hazard to the ceiling or ground edge of the visible rect.
-# at_frac is the hazard's centre as a fraction of the rect width (lap + fraction).
-func place(rect: Rect2, surface_thickness: float, on_ceiling: bool, at_frac: float, hazard_size: Vector2) -> void:
-	size = hazard_size
+# Height is round(h_frac * playable height), so it rescales with the viewport.
+func place(rect: Rect2, surface_thickness: float, on_ceiling: bool, at_x: float, width: float, height_frac: float) -> void:
+	var playable := rect.size.y - 2.0 * surface_thickness
+	size = Vector2(width, roundf(height_frac * playable))
 	ceiling_side = on_ceiling
-	x_frac = at_frac
-	world_x = rect.position.x + rect.size.x * at_frac
+	x_px = at_x
+	h_frac = height_frac
+	world_x = rect.position.x + x_px
 	var y := rect.end.y - surface_thickness - size.y / 2.0
 	if on_ceiling:
 		y = rect.position.y + surface_thickness + size.y / 2.0

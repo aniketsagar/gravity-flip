@@ -2,7 +2,7 @@ extends CharacterBody2D
 
 # Tuning values.
 const GRAVITY := 2700.0
-const MAX_VERTICAL_SPEED := 1000.0
+const MAX_VERTICAL_SPEED := 3000.0
 # Vertical speed given to the player the moment gravity is flipped, so a flip
 # reverses direction at once instead of waiting for gravity to turn the old velocity.
 const FLIP_SPEED := 600.0

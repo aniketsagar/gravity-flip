@@ -15,30 +15,43 @@ const SPAWN_AHEAD := 100.0
 
 const HazardScene := preload("res://scenes/hazard.tscn")
 
-# One pattern per lap (a lap is one visible width of scrolling); the next pattern
-# follows the previous one. x is the hazard centre as a fraction of the lap width,
-# w/h are pixels.
-# Hazards alternate ground, ceiling, so the player must keep flipping gravity.
+# Patterns repeat in order. Each has a length in pixels (the next pattern starts that far
+# further right) and hazards placed by x, their centre in pixels from the pattern start,
+# w in pixels and h_frac, the height as a fraction of the playable height.
+# Small is 0.15-0.25, medium 0.30-0.45, large 0.50-0.66 (never taller than 0.66).
+# Hazards alternate ground, ceiling, so the player must keep flipping gravity. Lengths and
+# positions leave each hazard enough room to be cleared after the previous one:
+# gap >= 32 + SCROLL_SPEED * (clear time of the next hazard + 0.3 s), checked by the tests.
 const PATTERNS := [
-	[
-		{"ceiling": false, "x": 0.45, "w": 30.0, "h": 120.0},
-		{"ceiling": true, "x": 0.93, "w": 30.0, "h": 120.0},
-	],
-	[
-		{"ceiling": false, "x": 0.45, "w": 40.0, "h": 160.0},
-		{"ceiling": true, "x": 0.93, "w": 40.0, "h": 160.0},
-	],
-	[
-		{"ceiling": false, "x": 0.48, "w": 30.0, "h": 180.0},
-		{"ceiling": true, "x": 0.93, "w": 50.0, "h": 160.0},
-	],
+	{"len": 480.0, "hazards": [
+		{"ceiling": false, "x": 216.0, "w": 30.0, "h_frac": 0.15},
+		{"ceiling": true, "x": 446.0, "w": 30.0, "h_frac": 0.20},
+	]},
+	{"len": 480.0, "hazards": [
+		{"ceiling": false, "x": 216.0, "w": 40.0, "h_frac": 0.30},
+		{"ceiling": true, "x": 446.0, "w": 40.0, "h_frac": 0.38},
+	]},
+	{"len": 480.0, "hazards": [
+		{"ceiling": false, "x": 216.0, "w": 40.0, "h_frac": 0.50},
+		{"ceiling": true, "x": 446.0, "w": 30.0, "h_frac": 0.45},
+	]},
+	{"len": 500.0, "hazards": [
+		{"ceiling": false, "x": 216.0, "w": 50.0, "h_frac": 0.25},
+		{"ceiling": true, "x": 466.0, "w": 40.0, "h_frac": 0.55},
+	]},
+	{"len": 480.0, "hazards": [
+		{"ceiling": false, "x": 216.0, "w": 40.0, "h_frac": 0.66},
+		{"ceiling": true, "x": 446.0, "w": 30.0, "h_frac": 0.20},
+	]},
 ]
 
 var patterns: Array = PATTERNS
 # Distance the world has scrolled left since the run started.
 var _scroll := 0.0
-# Next hazard to spawn: spec _spawn_spec of the pattern for lap _spawn_lap.
-var _spawn_lap := 0
+# Next hazard to spawn: spec _spawn_spec of pattern number _spawn_index, which starts
+# _spawn_origin pixels from the start of the run.
+var _spawn_index := 0
+var _spawn_origin := 0.0
 var _spawn_spec := 0
 var _tap_lock := 0.0
 
@@ -87,7 +100,8 @@ func _restart() -> void:
 	_game_over.visible = false
 	_tap_lock = RESTART_TAP_DELAY
 	_scroll = 0.0
-	_spawn_lap = 0
+	_spawn_index = 0
+	_spawn_origin = 0.0
 	_spawn_spec = 0
 	while _hazards.get_child_count() > 0:
 		var old := _hazards.get_child(0)
@@ -121,28 +135,30 @@ func _refresh_hazards() -> void:
 
 
 # Spawns hazards, in pattern order, until the next one is further than
-# SPAWN_AHEAD beyond the right edge. Lap n sits n visible widths further right.
+# SPAWN_AHEAD beyond the right edge. Each pattern starts its length after the previous one.
 func _spawn_hazards() -> void:
 	var rect := get_viewport().get_visible_rect()
 	var limit := rect.end.x + SPAWN_AHEAD
 	while true:
-		var pattern: Array = patterns[_spawn_lap % patterns.size()]
-		if _spawn_spec >= pattern.size():
-			# Lap finished; stop if the next lap starts beyond the spawn limit.
-			if rect.position.x + (_spawn_lap + 1) * rect.size.x - _scroll > limit:
+		var pattern: Dictionary = patterns[_spawn_index % patterns.size()]
+		var specs: Array = pattern["hazards"]
+		if _spawn_spec >= specs.size():
+			# Pattern finished; stop if the next one starts beyond the spawn limit.
+			if rect.position.x + _spawn_origin + pattern["len"] - _scroll > limit:
 				return
-			_spawn_lap += 1
+			_spawn_origin += pattern["len"]
+			_spawn_index += 1
 			_spawn_spec = 0
 			continue
-		var spec: Dictionary = pattern[_spawn_spec]
-		var left: float = rect.position.x + rect.size.x * (_spawn_lap + spec["x"]) - _scroll - spec["w"] / 2.0
+		var spec: Dictionary = specs[_spawn_spec]
+		var left: float = rect.position.x + _spawn_origin + spec["x"] - _scroll - spec["w"] / 2.0
 		if left > limit:
 			return
 		var hazard := HazardScene.instantiate()
 		hazard.body_entered.connect(_on_hazard_body_entered)
 		_hazards.add_child(hazard)
-		hazard.place(rect, SURFACE_THICKNESS, spec["ceiling"], _spawn_lap + spec["x"],
-				Vector2(spec["w"], spec["h"]))
+		hazard.place(rect, SURFACE_THICKNESS, spec["ceiling"], _spawn_origin + spec["x"],
+				spec["w"], spec["h_frac"])
 		hazard.position.x = hazard.world_x - _scroll
 		_spawn_spec += 1
 
@@ -151,7 +167,7 @@ func _spawn_hazards() -> void:
 func _place_hazards() -> void:
 	var rect := get_viewport().get_visible_rect()
 	for hazard in _hazards.get_children():
-		hazard.place(rect, SURFACE_THICKNESS, hazard.ceiling_side, hazard.x_frac, hazard.size)
+		hazard.place(rect, SURFACE_THICKNESS, hazard.ceiling_side, hazard.x_px, hazard.size.x, hazard.h_frac)
 		hazard.position.x = hazard.world_x - _scroll
 
 
