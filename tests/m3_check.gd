@@ -491,6 +491,152 @@ func _test_resize() -> void:
 	await _set_window(Vector2i(480, 854))
 
 
+# --- G1.1: visual-only spin on flip ---
+
+func _spin_nodes() -> Array:
+	return [_p.get_node("Halo"), _p.get_node("Visual"), _p.get_node("Outline")]
+
+
+func _spin_angle() -> float:
+	return _p.get_node("Visual").rotation
+
+
+# True when all three visuals share one angle.
+func _spin_in_sync() -> bool:
+	var a: float = _spin_angle()
+	for v in _spin_nodes():
+		if absf(v.rotation - a) > 0.0001:
+			return false
+	return true
+
+
+# The collision shape and the body itself must never rotate, at any moment.
+func _collision_untouched() -> bool:
+	var cs: CollisionShape2D = _p.get_node("CollisionShape2D")
+	return cs.rotation == 0.0 and cs.global_rotation == 0.0 and _p.rotation == 0.0 \
+			and (cs.shape as RectangleShape2D).size == Vector2(32, 32)
+
+
+# Each visual's pivot must stay on the body centre, so the spin is about the centre.
+func _pivots_centred() -> bool:
+	for v in _spin_nodes():
+		if ((v.get_global_transform() * v.pivot_offset) - _p.global_position).length() > 0.01:
+			return false
+	return true
+
+
+func _test_rotation() -> void:
+	print("-- player spin (visual only)")
+	await _new_main(EMPTY)
+	_check(_spin_angle() == 0.0 and _spin_in_sync() and _collision_untouched(), "starts unrotated")
+	_check(_p.get_node("Visual").pivot_offset == Vector2(16, 16) and _p.get_node("Outline").pivot_offset == Vector2(16, 16)
+			and _p.get_node("Halo").pivot_offset == Vector2(20, 20), "visual pivots are at each node's centre")
+	_check(_pivots_centred(), "visual pivots coincide with the body centre")
+	await _wait_unlocked()
+
+	# One flip: gravity is immediate, the spin is animated and ends at exactly 90 degrees clockwise.
+	_tap_touch()
+	_check(_p.gravity_dir == -1.0 and _p.velocity.y == -_p.FLIP_SPEED, "flip is immediate (gravity and velocity change at once)")
+	_check(_spin_angle() == 0.0, "spin has not jumped on the flip tick (it animates)")
+	var prev := 0.0
+	var smooth := true
+	var collision_ok := true
+	var centred := true
+	var in_sync := true
+	var saw_mid := false
+	for i in 30:
+		await physics_frame
+		var a := _spin_angle()
+		smooth = smooth and a >= prev - 0.0001 and a <= PI / 2.0 + 0.0001
+		saw_mid = saw_mid or (a > 0.01 and a < PI / 2.0 - 0.01)
+		collision_ok = collision_ok and _collision_untouched()
+		centred = centred and _pivots_centred()
+		in_sync = in_sync and _spin_in_sync()
+		prev = a
+	_check(smooth and saw_mid, "spin increases smoothly toward 90 degrees (saw intermediate angles)")
+	_check(absf(_spin_angle() - PI / 2.0) < 0.0001, "ends at exactly +90 degrees (clockwise)")
+	_check(collision_ok, "collision shape stays axis-aligned 32x32 and the body never rotates during the spin")
+	_check(centred and in_sync, "the visuals spin around the centre and stay in sync")
+
+	# Four flips make a full turn; each adds exactly 90 degrees.
+	var step_ok := true
+	for k in 3:
+		await _wait_unlocked()
+		_p.flip()
+		await _frames(30)
+		step_ok = step_ok and absf(_spin_angle() - (k + 2) * PI / 2.0) < 0.0001
+	_check(step_ok and _p._spin_turns == 4, "every flip adds exactly 90 degrees (4 flips = %.4f rad)" % _spin_angle())
+	_check(absf(fposmod(_spin_angle(), TAU)) < 0.0001 or absf(fposmod(_spin_angle(), TAU) - TAU) < 0.0001, "four flips are a full turn")
+	_check(_collision_untouched() and _p.running, "collision still untouched after several flips")
+
+	# Rapid flips retarget from the current angle and still end aligned.
+	await _new_main(EMPTY)
+	await _wait_unlocked()
+	var bounded := true
+	for i in 12:
+		_p.flip()
+		await _frames(3)
+		bounded = bounded and _collision_untouched() and _p.position.y >= _ceil_y() - 1.0 and _p.position.y <= _floor_y() + 1.0
+	await _frames(30)
+	_check(_p._spin_turns == 12 and absf(_spin_angle() - 12.0 * PI / 2.0) < 0.0001 and _spin_in_sync(),
+			"rapid flips end exactly on 12 quarter turns (%.4f rad)" % _spin_angle())
+	_check(bounded and _p.running, "rapid flips keep the collision shape fixed and the player inside the corridor")
+
+	# Ignored flips do not spin.
+	await _new_main(EMPTY)
+	_tap_mouse()
+	_tap_touch()
+	await _frames(20)
+	_check(_p._spin_turns == 0 and _spin_angle() == 0.0, "taps during the post-restart lock do not spin")
+	await _wait_unlocked()
+	_tap_mouse(InputEvent.DEVICE_ID_EMULATION)
+	var e := InputEventScreenTouch.new()
+	e.pressed = false
+	_main._unhandled_input(e)
+	var m := InputEventMouseButton.new()
+	m.button_index = MOUSE_BUTTON_RIGHT
+	m.pressed = true
+	_main._unhandled_input(m)
+	await _frames(20)
+	_check(_p._spin_turns == 0 and _spin_angle() == 0.0, "emulated mouse, touch release and right click do not spin")
+
+	# After game over: no spin from taps, direct flips or the tap lock.
+	await _new_main()
+	await _wait_unlocked()
+	_tap_touch()
+	await _frames(30)
+	_check(absf(_spin_angle() - PI / 2.0) < 0.0001, "one real flip spun the player before the crash")
+	_p.position = _hazards()[0].position
+	await _frames(3)
+	_check(not _p.running, "crashed")
+	var turns_at_crash: int = _p._spin_turns
+	_tap_mouse()
+	_p.flip()
+	await _wait_unlocked()
+	_p.flip()
+	await _frames(30)
+	_check(_p._spin_turns == turns_at_crash and absf(_spin_angle() - PI / 2.0) < 0.0001,
+			"flips after game over (tap lock and direct calls) do not spin")
+
+	# Restart resets the spin immediately and leaves no animation running.
+	_tap_mouse()
+	_check(_p.running and _spin_angle() == 0.0 and _spin_in_sync() and _p._spin_turns == 0, "restart resets the visual rotation to zero")
+	await _frames(30)
+	_check(_spin_angle() == 0.0 and _spin_in_sync() and _collision_untouched(), "no stale animation after restart")
+
+	# A flip right before a crash, then restart: the old tween must not keep turning the new run.
+	await _wait_unlocked()
+	_tap_mouse()
+	await _frames(2)
+	_p.position = _hazards()[0].position
+	await _frames(3)
+	_check(not _p.running, "crashed again mid-spin")
+	await _wait_unlocked()
+	_tap_mouse()
+	await _frames(30)
+	_check(_p.running and _spin_angle() == 0.0 and _p._spin_turns == 0, "restart during/after a spin starts at zero rotation and stays there")
+
+
 func _initialize() -> void:
 	await _test_movement_and_surfaces()
 	await _test_snappy_flip()
@@ -498,6 +644,7 @@ func _initialize() -> void:
 	await _test_layout()
 	await _test_collisions()
 	await _test_restart_and_input()
+	await _test_rotation()
 	await _test_resize()
 	await _test_scroll_lifecycle()
 	print("-- solvability: patterns survivable with flips")
