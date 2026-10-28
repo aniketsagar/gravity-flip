@@ -51,8 +51,9 @@ func _set_window(size: Vector2i) -> void:
 	await process_frame
 
 
-# Fresh Main, optionally with a replacement pattern list (EMPTY = no hazards).
-func _new_main(patterns = null) -> void:
+# Fresh Main, optionally with a replacement pattern list (EMPTY = no hazards) and a jumbo
+# schedule. Jumbos are disabled by default so the pre-G1.3 tests keep their expected obstacles.
+func _new_main(patterns = null, jumbos = null) -> void:
 	if _main:
 		root.remove_child(_main)
 		_main.queue_free()
@@ -60,6 +61,7 @@ func _new_main(patterns = null) -> void:
 	_main = load("res://scenes/main.tscn").instantiate()
 	if patterns != null:
 		_main.patterns = patterns
+	_main.jumbo_schedule = jumbos if jumbos != null else []
 	root.add_child(_main)
 	await _frames(2)
 	_p = _main.get_node("Player")
@@ -837,8 +839,8 @@ func _pair_patterns(gap: float) -> Array:
 
 # Bot with a reaction delay: it flips delay_px of scroll after the player's left edge has passed
 # the previous hazard (for the first hazard, first_px of scroll after the start).
-func _run_delay_bot(patterns: Array, delay_px: float, first_px: float, target_scroll: float) -> Dictionary:
-	await _new_main(patterns)
+func _run_delay_bot(patterns: Array, delay_px: float, first_px: float, target_scroll: float, jumbos = null) -> Dictionary:
+	await _new_main(patterns, jumbos)
 	var flat := _flat_hazards(patterns, 12)
 	var n := 0
 	var flips := 0
@@ -934,6 +936,410 @@ func _test_g12_resize_restart() -> void:
 	_check(found, "pattern 1 follows pattern 0 at origin len(P0) after a restart")
 
 
+# --- G1.3 stage 1: jumbo attraction ---
+
+const NEAR_JUMBO := {"x": 700.0, "y_frac": 0.5}
+const ROUTE_JUMBO := {"x": 900.0, "y_frac": 0.5}
+const LOW_JUMBO := {"x": 700.0, "y_frac": 0.7}
+const G12_PATTERN_TABLE := [
+	[480.0, [[false, 216.0, 30.0, 0.15], [true, 446.0, 30.0, 0.20]]],
+	[480.0, [[false, 216.0, 40.0, 0.30], [true, 446.0, 40.0, 0.38]]],
+	[480.0, [[false, 216.0, 40.0, 0.50], [true, 446.0, 30.0, 0.45]]],
+	[500.0, [[false, 216.0, 50.0, 0.25], [true, 466.0, 40.0, 0.55]]],
+	[480.0, [[false, 216.0, 40.0, 0.66], [true, 446.0, 30.0, 0.20]]],
+]
+
+
+func _att(player: Vector2, core: Vector2, r: float, big_r: float, peak: float) -> Vector2:
+	return load("res://scripts/jumbo.gd").attraction(player, core, r, big_r, peak)
+
+
+func _test_g13_attraction_math() -> void:
+	print("-- G1.3 attraction calculation (static formula)")
+	var r := 100.0
+	var big_r := 300.0
+	var peak := 4000.0
+	var core := Vector2(500.0, 400.0)
+	_check(_att(core + Vector2(0, -400), core, r, big_r, peak) == Vector2.ZERO, "outside the field: zero attraction")
+	_check(_att(core + Vector2(400, 0), core, r, big_r, peak) == Vector2.ZERO, "outside the field (horizontal): zero attraction")
+	_check(_att(core + Vector2(0, -big_r), core, r, big_r, peak) == Vector2.ZERO, "exactly at the field boundary: zero attraction")
+	_check(_att(core + Vector2(big_r, 0), core, r, big_r, peak) == Vector2.ZERO, "exactly at the field boundary (horizontal): zero attraction")
+	var p_in := core + Vector2(-120, -90)
+	var a_in := _att(p_in, core, r, big_r, peak)
+	_check(a_in.length() > 0.0 and a_in.dot(core - p_in) > 0.0 and absf(a_in.normalized().cross((core - p_in).normalized())) < 0.000001,
+			"inside the field: attraction points toward the core")
+	_check(_att(core + Vector2(0, -200), core, r, big_r, peak).y > 0.0, "player above the core: attraction points down (+y)")
+	_check(_att(core + Vector2(0, 200), core, r, big_r, peak).y < 0.0, "player below the core: attraction points up (-y)")
+	var m250 := _att(core + Vector2(0, -250), core, r, big_r, peak).length()
+	var m200 := _att(core + Vector2(0, -200), core, r, big_r, peak).length()
+	var m150 := _att(core + Vector2(0, -150), core, r, big_r, peak).length()
+	_check(m250 > 0.0 and m250 < m200 and m200 < m150, "magnitude increases as the player approaches (%.0f < %.0f < %.0f)" % [m250, m200, m150])
+	_check(absf(m200 - peak * (big_r - 200.0) / (big_r - r)) < 0.001, "magnitude follows f(d) = (R - d) / (R - r) (%.1f)" % m200)
+	var at_core := _att(core + Vector2(0, -r), core, r, big_r, peak).length()
+	var inside_core := _att(core + Vector2(0, -50), core, r, big_r, peak).length()
+	var near_centre := _att(core + Vector2(0, -0.01), core, r, big_r, peak).length()
+	_check(absf(at_core - peak) < 0.001 and absf(inside_core - peak) < 0.001 and absf(near_centre - peak) < 0.001,
+			"magnitude is capped at the peak at and inside the core radius (%.1f, %.1f, %.1f)" % [at_core, inside_core, near_centre])
+	var same := _att(core, core, r, big_r, peak)
+	var tiny := _att(core + Vector2(0, -0.00000001), core, r, big_r, peak)
+	_check(same == Vector2.ZERO and tiny == Vector2.ZERO and is_finite(same.x) and is_finite(tiny.y), "coincident and nearly coincident centres: finite, no division by zero")
+	# Horizontal offset: the vector formula, not the full strength, decides the vertical part.
+	var p_off := core + Vector2(-150, -100)
+	var d_off := p_off.distance_to(core)
+	var f_off := (big_r - d_off) / (big_r - r)
+	var expect := (core - p_off) / d_off * (peak * f_off)
+	var a_off := _att(p_off, core, r, big_r, peak)
+	_check((a_off - expect).length() < 0.001 and a_off.y > 0.0 and a_off.y < peak * f_off - 1.0 and a_off.x > 0.0,
+			"horizontal offset: a = A f(d) (core - player) / d; vertical part %.1f is less than A f = %.1f" % [a_off.y, peak * f_off])
+	var eps := 0.001
+	var inner := _att(core + Vector2(0, -(big_r - eps)), core, r, big_r, peak).length()
+	var outer := _att(core + Vector2(0, -(big_r + eps)), core, r, big_r, peak).length()
+	_check(inner <= peak * eps / (big_r - r) + 0.001 and outer == 0.0, "boundary is continuous: %.5f just inside, 0 just outside (ramp slope %.2f/px)" % [inner, peak / (big_r - r)])
+	var below_core := _att(core + Vector2(0, -(r + eps)), core, r, big_r, peak).length()
+	var in_core := _att(core + Vector2(0, -(r - eps)), core, r, big_r, peak).length()
+	_check(absf(below_core - in_core) <= peak * eps * 2.0 / (big_r - r) + 0.000001, "no jump at the core radius either")
+
+
+func _solo_player() -> void:
+	# Main's physics is switched off so nothing overwrites attract_accel; the Player still integrates.
+	await _new_main(EMPTY)
+	_main.set_physics_process(false)
+	_p.position.y = _rect.get_center().y
+	_p.velocity = Vector2.ZERO
+	_p.attract_accel = 0.0
+	await physics_frame
+
+
+func _test_g13_player_integration() -> void:
+	print("-- G1.3 player integration")
+	var dt := 1.0 / Engine.physics_ticks_per_second
+	await _solo_player()
+	_check(_p.attract_accel == 0.0, "attraction defaults to zero")
+	var v0: float = _p.velocity.y
+	await physics_frame
+	_check(absf((_p.velocity.y - v0) - _p.GRAVITY * dt) < 0.01, "without attraction a tick adds exactly GRAVITY * dt (%.3f)" % (_p.velocity.y - v0))
+	_p.attract_accel = 1000.0
+	v0 = _p.velocity.y
+	await physics_frame
+	_check(absf((_p.velocity.y - v0) - (_p.GRAVITY + 1000.0) * dt) < 0.01, "downward attraction adds to gravity (%.3f)" % (_p.velocity.y - v0))
+	_p.attract_accel = -1000.0
+	v0 = _p.velocity.y
+	await physics_frame
+	_check(absf((_p.velocity.y - v0) - (_p.GRAVITY - 1000.0) * dt) < 0.01, "upward attraction subtracts from gravity (%.3f)" % (_p.velocity.y - v0))
+
+	# A flip still works while attraction is active, and attraction keeps acting afterwards.
+	await _solo_player()
+	_p.attract_accel = -4000.0
+	_p.flip()
+	_check(_p.gravity_dir == -1.0 and _p.velocity.y == -_p.FLIP_SPEED, "flip inside a strong field: immediate -FLIP_SPEED")
+	await physics_frame
+	_check(absf(_p.velocity.y - (-_p.FLIP_SPEED + (-_p.GRAVITY - 4000.0) * dt)) < 0.01, "after the flip gravity (up) and attraction (up) both act (%.2f)" % _p.velocity.y)
+	_p.flip()
+	_check(_p.gravity_dir == 1.0 and _p.velocity.y == _p.FLIP_SPEED, "second flip inside the field: immediate +FLIP_SPEED")
+	await physics_frame
+	_check(absf(_p.velocity.y - (_p.FLIP_SPEED + (_p.GRAVITY - 4000.0) * dt)) < 0.01, "attraction (up) resists the flipped gravity (down) (%.2f)" % _p.velocity.y)
+
+	# Speed cap, both directions, and no horizontal effect.
+	for sign in [1.0, -1.0]:
+		await _solo_player()
+		_p.attract_accel = 50000.0 * sign
+		var x0: float = _p.position.x
+		var vmax := 0.0
+		var x_ok := true
+		for i in 12:
+			await physics_frame
+			vmax = maxf(vmax, absf(_p.velocity.y))
+			x_ok = x_ok and _p.velocity.x == 0.0 and _p.position.x == x0
+		_check(vmax <= _p.MAX_VERTICAL_SPEED + 0.01 and vmax > _p.MAX_VERTICAL_SPEED - 0.01,
+				"%s: 50000 px/s^2 of attraction is clamped to MAX_VERTICAL_SPEED (max %.2f)" % ["down" if sign > 0.0 else "up", vmax])
+		_check(x_ok, "attraction never changes horizontal velocity or position")
+
+	# Stop and start clear the value.
+	await _solo_player()
+	_p.attract_accel = 1234.0
+	_p.stop()
+	_check(_p.attract_accel == 0.0 and not _p.running, "stop() clears attraction")
+	_p.attract_accel = 1234.0
+	_p.start(Vector2(40.0, 700.0))
+	_check(_p.attract_accel == 0.0 and _p.running, "start() clears attraction")
+
+
+func _jumbo_nodes() -> Array:
+	return _main.get_node("Jumbos").get_children()
+
+
+func _test_g13_jumbo_structure() -> void:
+	print("-- G1.3 jumbo structure, collision, scrolling, lifecycle")
+	await _set_window(Vector2i(480, 854))
+	await _new_main(EMPTY, [NEAR_JUMBO])
+	var js := _jumbo_nodes()
+	_check(js.size() == 1 and _hazards().size() == 0, "a scheduled jumbo spawns into Jumbos, not into Hazards")
+	var j = js[0]
+	var r: float = 0.12 * _playable()
+	var big_r: float = 0.30 * _playable()
+	var shapes := []
+	for c in j.get_children():
+		if c is CollisionShape2D or c is CollisionPolygon2D or c is CollisionObject2D:
+			shapes.append(c)
+	_check(shapes.size() == 1 and shapes[0] is CollisionShape2D and shapes[0].shape is CircleShape2D and absf(shapes[0].shape.radius - r) < 0.001,
+			"the only collision shape is the core circle (radius %.2f = 0.12 P)" % r)
+	_check(absf(j.core_radius - r) < 0.001 and absf(j.field_radius - big_r) < 0.001 and j.field_radius > j.core_radius, "core and field radii are 0.12 P and 0.30 P (%.1f, %.1f)" % [j.core_radius, j.field_radius])
+	_check(j.collision_layer == 0 and j.collision_mask == 2 and not j.monitorable and shapes[0].position == Vector2.ZERO, "core detects only the player and is concentric with the field centre")
+	_check(j.size == Vector2.ONE * big_r * 2.0 and j.strength == _main.JUMBO_STRENGTH and _main.JUMBO_STRENGTH == 4000.0, "field bounding box and default strength 4000")
+
+	# Field only: the player inside the field but outside the core is not hit.
+	await _new_main(EMPTY, [NEAR_JUMBO])
+	j = _jumbo_nodes()[0]
+	_main._scroll = 700.0 - 40.0
+	await physics_frame
+	j = _jumbo_nodes()[0]
+	_p.position = Vector2(_p.position.x, j.position.y + (j.core_radius + j.field_radius) / 2.0)
+	await _frames(3)
+	_check(_p.running and not _label_visible() and _p.attract_accel < 0.0, "inside the field, outside the core: no collision, attraction pulls up (%.0f px/s^2)" % _p.attract_accel)
+
+	# Core hit uses the existing game-over path.
+	await _new_main(EMPTY, [NEAR_JUMBO])
+	_main._scroll = 700.0 - 40.0
+	await physics_frame
+	j = _jumbo_nodes()[0]
+	_main.set_physics_process(false)
+	_p.position = Vector2(_p.position.x, j.position.y - j.core_radius - 16.0 - 12.0)
+	await _frames(3)
+	_check(_p.running and not _label_visible(), "12 px above the core: no hit")
+	_p.position = Vector2(_p.position.x, j.position.y - j.core_radius + 6.0)
+	await _frames(3)
+	_check(not _p.running and _label_visible() and _p.velocity == Vector2.ZERO and _p.attract_accel == 0.0,
+			"touching the core ends the run (existing game-over path), velocity and attraction cleared")
+	_main.set_physics_process(true)  # the tap lock counts down in Main's physics step
+	await _wait_unlocked()
+	_tap_mouse()
+	_check(_p.running and not _label_visible(), "tap after the delay restarts after a core hit")
+
+	# Scrolling: core and field move together with the world.
+	await _new_main(EMPTY, [NEAR_JUMBO])
+	j = _jumbo_nodes()[0]
+	var x0: float = j.position.x
+	var probe := Vector2(300.0, 427.0)
+	await _frames(30)
+	_check(absf((x0 - j.position.x) - _px_per_tick() * 30.0) < 0.001 and absf(j.position.x - (j.world_x - _main._scroll)) < 0.001,
+			"jumbo scrolls at SCROLL_SPEED like the hazards")
+	_check((j.attraction_at(probe) - _att(probe, j.position, j.core_radius, j.field_radius, j.strength)).length() < 0.0001,
+			"the attraction is centred on the scrolled position (field follows the core)")
+
+	# Removal only after the whole field has left the screen.
+	await _new_main(EMPTY, [NEAR_JUMBO])
+	j = _jumbo_nodes()[0]
+	var fr: float = j.field_radius
+	_main._scroll = 700.0 + fr - 1.0
+	_main._refresh_hazards()
+	_check(_jumbo_nodes().size() == 1 and j.position.x + j.core_radius < 24.0, "core already behind the player but the field is still on screen: kept")
+	_main._scroll += 2.0
+	_main._refresh_hazards()
+	_check(_jumbo_nodes().size() == 0, "removed once the whole field has passed the left edge")
+
+	# Spawn: early enough to scroll in from beyond the right edge.
+	await _new_main(EMPTY, [ROUTE_JUMBO])
+	_check(_jumbo_nodes().size() == 0, "a jumbo further than the spawn distance is not spawned yet")
+	var seen_beyond := false
+	for i in 120:
+		await physics_frame
+		if _jumbo_nodes().size() == 1:
+			var jj = _jumbo_nodes()[0]
+			seen_beyond = jj.position.x - jj.field_radius >= _rect.end.x - 0.001
+			break
+	_check(seen_beyond, "the field spawns fully beyond the right edge, so it is visible before the core arrives")
+
+
+func _test_g13_restart_and_viewports() -> void:
+	print("-- G1.3 restart and viewports")
+	await _set_window(Vector2i(480, 854))
+	await _new_main(EMPTY, [NEAR_JUMBO])
+	var old = _jumbo_nodes()[0]
+	_main._scroll = 700.0 - 40.0
+	await physics_frame
+	old = _jumbo_nodes()[0]
+	_p.position = Vector2(_p.position.x, old.position.y + (old.core_radius + old.field_radius) / 2.0)
+	await _frames(2)
+	_check(_p.attract_accel != 0.0, "scenario check: the player is being attracted before the crash (%.0f)" % _p.attract_accel)
+	_main._on_hazard_body_entered(_p)
+	_check(_p.attract_accel == 0.0 and not _p.running, "game over clears attraction at once")
+	await _wait_unlocked()
+	_tap_mouse()
+	_check(_p.running and _p.attract_accel == 0.0 and _main._scroll == 0.0, "restart: running, no attraction, scroll reset")
+	var fresh := _jumbo_nodes()
+	_check(fresh.size() == 1 and fresh[0] != old and old.get_parent() == null and absf(fresh[0].position.x - 700.0) < 0.001 and _main._next_jumbo == 1,
+			"restart removes the old jumbo and spawns a fresh one at its start position")
+	await _frames(5)
+	_check(_p.running and _p.attract_accel == 0.0, "no stale attraction after restart (the ground lane is outside the field)")
+
+	# A jumbo-free restart leaves nothing behind.
+	await _new_main(EMPTY, [NEAR_JUMBO])
+	_main.jumbo_schedule = []
+	_main._on_hazard_body_entered(_p)
+	await _wait_unlocked()
+	_tap_mouse()
+	_check(_jumbo_nodes().size() == 0 and _p.running, "restart with jumbos disabled spawns none")
+
+	# Geometry for several viewport sizes, and after a resize.
+	for size in G12_WINDOWS:
+		await _set_window(size)
+		await _new_main(EMPTY, [NEAR_JUMBO])
+		var j = _jumbo_nodes()[0]
+		var top: float = _rect.position.y + _main.SURFACE_THICKNESS
+		var bottom: float = _rect.end.y - _main.SURFACE_THICKNESS
+		var p := _playable()
+		var ok: bool = absf(j.core_radius - 0.12 * p) < 0.001 and absf(j.field_radius - 0.30 * p) < 0.001
+		ok = ok and absf(j.position.y - (top + 0.5 * p)) < 0.001 and j.position.y - j.core_radius >= top and j.position.y + j.core_radius <= bottom
+		ok = ok and j.position.y - j.field_radius >= top and j.position.y + j.field_radius <= bottom
+		ok = ok and absf(j.get_child(0).shape.radius - j.core_radius) < 0.001
+		_check(ok, "%s: core %.1f and field %.1f px fit inside the %.0f px playable area, centred" % [size, j.core_radius, j.field_radius, p])
+	await _set_window(Vector2i(480, 854))
+	await _new_main(EMPTY, [NEAR_JUMBO])
+	await _set_window(Vector2i(540, 1200))
+	_rect = root.get_visible_rect()
+	await _frames(2)
+	var jr = _jumbo_nodes()[0]
+	_check(absf(jr.core_radius - 0.12 * _playable()) < 0.001 and absf(jr.get_child(0).shape.radius - jr.core_radius) < 0.001
+			and absf(jr.position.y - (_rect.position.y + _main.SURFACE_THICKNESS + 0.5 * _playable())) < 0.001 and _p.running,
+			"resize re-places the jumbo geometry and keeps the collision shape in sync")
+	await _set_window(Vector2i(480, 854))
+
+
+func _test_g13_patterns_unchanged() -> void:
+	print("-- G1.3 leaves the G1.2 patterns alone")
+	var pats := _main_patterns()
+	var same: bool = pats.size() == G12_PATTERN_TABLE.size()
+	for i in mini(pats.size(), G12_PATTERN_TABLE.size()):
+		var row: Array = G12_PATTERN_TABLE[i]
+		same = same and pats[i]["len"] == row[0] and pats[i]["hazards"].size() == row[1].size()
+		for k in mini(pats[i]["hazards"].size(), row[1].size()):
+			var h: Dictionary = pats[i]["hazards"][k]
+			var e: Array = row[1][k]
+			same = same and h["ceiling"] == e[0] and h["x"] == e[1] and h["w"] == e[2] and h["h_frac"] == e[3]
+	_check(same, "PATTERNS still has the five approved G1.2 patterns, values and order")
+	await _new_main(null, [NEAR_JUMBO])
+	var first := _hazards()
+	var spec0: Dictionary = pats[0]["hazards"][0]
+	var spec1: Dictionary = pats[0]["hazards"][1]
+	var no_jumbo_in_hazards := true
+	for h in first:
+		no_jumbo_in_hazards = no_jumbo_in_hazards and h.has_method("place") and not h.has_method("attraction_at")
+	_check(_main.patterns == pats and first.size() == 2 and no_jumbo_in_hazards and first[0].x_px == spec0["x"] and first[1].x_px == spec1["x"],
+			"with a jumbo scheduled the hazards still follow pattern 0 and Hazards holds only rectangular hazards")
+	var shipped = load("res://scenes/main.tscn").instantiate()
+	_check(shipped.jumbo_schedule.is_empty() and shipped.JUMBO_SCHEDULE.is_empty() and shipped.jumbo_schedule == shipped.JUMBO_SCHEDULE,
+			"jumbo encounters are disabled by default in the game (empty schedule) until stage 2")
+	_check(not shipped.JUMBO_PROTOTYPE_SCHEDULE.is_empty(), "the prototype schedule stays available for development and tests")
+	shipped.free()
+
+
+# Player on the ground lane of a low core (y_frac 0.7): the field reaches the lane, the core is overhead.
+# Flip up at tick 0 and back down after k ticks; returns whether the run survives the encounter.
+func _recovery_run(strength: float, k: int) -> Dictionary:
+	await _new_main(EMPTY, [LOW_JUMBO])
+	_main._scroll = 700.0 - 40.0
+	await physics_frame
+	var j = _jumbo_nodes()[0]
+	j.strength = strength
+	var lane_att := 0.0
+	await physics_frame
+	lane_att = _p.attract_accel
+	_p.flip()
+	var frames := 0
+	var max_att := 0.0
+	while _p.running and frames < 80:
+		if frames == k:
+			_p.flip()
+		await physics_frame
+		frames += 1
+		max_att = maxf(max_att, absf(_p.attract_accel))
+	return {"survived": _p.running, "frames": frames, "max_att": max_att, "lane_att": lane_att}
+
+
+func _test_g13_recovery() -> void:
+	print("-- G1.3 recovery with a second gravity flip (physics only; not a fairness claim)")
+	await _set_window(Vector2i(480, 854))
+	var with_field := {}
+	var no_field := {}
+	var lane := 0.0
+	for k in range(0, 16):
+		var a := await _recovery_run(4000.0, k)
+		var b := await _recovery_run(0.0, k)
+		with_field[k] = a["survived"]
+		no_field[k] = b["survived"]
+		if k == 0:
+			lane = a["lane_att"]
+	var last_with := -1
+	var last_without := -1
+	for k in range(0, 16):
+		if with_field[k]:
+			last_with = k
+		if no_field[k]:
+			last_without = k
+	_check(lane < 0.0 and lane > -2700.0, "the resting lane is inside the field here, with attraction weaker than gravity (%.0f px/s^2), so it does not lift the player" % lane)
+	_check(with_field[2] and with_field[4], "recovery works: flipping up then back down within a few ticks survives with the field (A = 4000)")
+	_check(not with_field[15] and not no_field[15], "negative control: waiting too long before flipping back hits the core, with or without the field")
+	_check(last_with >= 1 and last_without >= last_with, "the field does not widen the recovery window: last surviving tick %d with the field, %d without" % [last_with, last_without])
+
+
+# Intended routes through a mid-corridor jumbo (core centre 900 px from the start). Player x is fixed;
+# dx is the core centre minus the player centre. Routes use direct flips (no tap lock).
+func _route_run(kind: String) -> Dictionary:
+	await _set_window(Vector2i(480, 854))
+	await _new_main(EMPTY, [ROUTE_JUMBO])
+	var r: float = 0.12 * _playable()
+	var big_r: float = 0.30 * _playable()
+	var max_att := 0.0
+	var lane_att := 0.0
+	var flipped_up := false
+	var flipped_down := false
+	var frames := 0
+	while _p.running and _main._scroll < 900.0 + big_r + 60.0 and frames < 1200:
+		var dx: float = 900.0 - _main._scroll - _p.position.x
+		if kind != "ground" and not flipped_up:
+			_p.flip()
+			flipped_up = true
+		if kind == "over_then_descend" and flipped_up and not flipped_down and dx <= -(r + 36.0):
+			_p.flip()
+			flipped_down = true
+		if kind == "early_descend" and flipped_up and not flipped_down and dx <= 0.0:
+			_p.flip()
+			flipped_down = true
+		await physics_frame
+		frames += 1
+		max_att = maxf(max_att, absf(_p.attract_accel))
+		if kind == "ground":
+			lane_att = maxf(lane_att, absf(_p.attract_accel))
+	return {"running": _p.running, "max_att": max_att, "lane_att": lane_att, "frames": frames, "flipped_down": flipped_down}
+
+
+func _test_g13_default_schedule() -> void:
+	print("-- G1.3 prototype jumbo schedule: G1.2 play is unchanged until its field arrives")
+	var pats := _main_patterns()
+	var shipped: Array = load("res://scripts/main.gd").JUMBO_PROTOTYPE_SCHEDULE
+	# NOT claimed: that the full-corridor flip bot survives the encounter itself. Every full flip
+	# crosses a mid-corridor core's column, so stage 2 needs a dedicated, clearance-checked segment.
+	for size in G12_WINDOWS:
+		await _set_window(size)
+		await _new_main(pats, shipped)
+		var arrive: float = shipped[0]["x"] - 0.30 * _playable() - 60.0
+		var r := await _run_delay_bot(pats, SCROLL * REACTION, SCROLL * REACTION, arrive, shipped)
+		_check(r["running"] and r["scroll"] >= arrive and _jumbo_nodes().size() == 1 and _p.attract_accel == 0.0,
+				"%s: with the prototype schedule the 0.3 s-delay bot survives %.0f px of normal G1.2 play; the jumbo is on screen ahead but exerts no force yet" % [size, r["scroll"]])
+	await _set_window(Vector2i(480, 854))
+
+
+func _test_g13_routes() -> void:
+	print("-- G1.3 traversal routes through a mid-corridor jumbo (automated physics, not device play)")
+	var ground := await _route_run("ground")
+	_check(ground["running"] and ground["max_att"] == 0.0, "route A: staying on the ground lane passes under the core without any attraction (%d ticks)" % ground["frames"])
+	var over := await _route_run("over_then_descend")
+	_check(over["running"] and over["flipped_down"] and over["max_att"] > 0.0,
+			"route B: pass above the core on the ceiling lane, then descend through the field behind it: survives and is attracted (max %.0f px/s^2)" % over["max_att"])
+	var early := await _route_run("early_descend")
+	_check(early["flipped_down"] and not early["running"], "negative control: descending while level with the core runs into it and ends the run")
+
+
 func _initialize() -> void:
 	# Patterns are in pixels, so the hazards alive at once depend on the width: test at the M52 width.
 	await _set_window(Vector2i(480, 854))
@@ -951,6 +1357,14 @@ func _initialize() -> void:
 	await _test_g12_clearance()
 	await _test_g12_bot()
 	await _test_g12_resize_restart()
+	await _test_g13_attraction_math()
+	await _test_g13_player_integration()
+	await _test_g13_jumbo_structure()
+	await _test_g13_restart_and_viewports()
+	await _test_g13_patterns_unchanged()
+	await _test_g13_recovery()
+	await _test_g13_routes()
+	await _test_g13_default_schedule()
 	print("-- solvability: patterns survivable with flips")
 	await _test_bot(Vector2i(540, 960))
 	await _test_bot(Vector2i(540, 1200))

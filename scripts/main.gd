@@ -14,6 +14,24 @@ const RESTART_TAP_DELAY := 0.15
 const SPAWN_AHEAD := 100.0
 
 const HazardScene := preload("res://scenes/hazard.tscn")
+const JumboScene := preload("res://scenes/jumbo.tscn")
+
+# Jumbo obstacles (G1.3 stage 1): a solid circular core inside a non-solid attraction field that
+# pulls the player vertically toward the core. They live in their own node and schedule, apart
+# from the rectangular hazards and PATTERNS. Sizes are fractions of the playable height.
+const JUMBO_CORE_FRAC := 0.12
+const JUMBO_FIELD_FRAC := 0.30
+# Peak attraction in px/s^2 at and inside the core radius (provisional; compare 2700, 4000, 6000).
+const JUMBO_STRENGTH := 4000.0
+# Jumbos are OFF in normal play until stage 2 adds a dedicated, clearance-checked encounter
+# segment. A schedule is a sorted list of {x, y_frac}: x is the core centre in pixels from the
+# start of the run, y_frac its height as a fraction of the playable height from the ceiling.
+const JUMBO_SCHEDULE := []
+# Stage 1 prototype placement for development and tests (set Main.jumbo_schedule to it). It is
+# NOT validated as fair: a player who flips to the far lane at every hazard hits the core.
+const JUMBO_PROTOTYPE_SCHEDULE := [
+	{"x": 2760.0, "y_frac": 0.5},
+]
 
 # Patterns repeat in order. Each has a length in pixels (the next pattern starts that far
 # further right) and hazards placed by x, their centre in pixels from the pattern start,
@@ -46,6 +64,9 @@ const PATTERNS := [
 ]
 
 var patterns: Array = PATTERNS
+# Jumbo encounters; an empty list disables them. Tests that expect only PATTERNS set it to [].
+var jumbo_schedule: Array = JUMBO_SCHEDULE
+var jumbo_strength := JUMBO_STRENGTH
 # Distance the world has scrolled left since the run started.
 var _scroll := 0.0
 # Next hazard to spawn: spec _spawn_spec of pattern number _spawn_index, which starts
@@ -53,12 +74,15 @@ var _scroll := 0.0
 var _spawn_index := 0
 var _spawn_origin := 0.0
 var _spawn_spec := 0
+# Next entry of jumbo_schedule to spawn.
+var _next_jumbo := 0
 var _tap_lock := 0.0
 
 @onready var _player = $Player
 @onready var _ground: StaticBody2D = $Ground
 @onready var _ceiling: StaticBody2D = $Ceiling
 @onready var _hazards: Node2D = $Hazards
+@onready var _jumbos: Node2D = $Jumbos
 @onready var _game_over: Label = $GameOverLabel
 
 
@@ -74,6 +98,8 @@ func _physics_process(delta: float) -> void:
 		return
 	_scroll += SCROLL_SPEED * delta
 	_refresh_hazards()
+	# Main's physics step runs before the Player's, so this value is used in the same tick.
+	_player.attract_accel = _jumbo_attraction()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -103,11 +129,17 @@ func _restart() -> void:
 	_spawn_index = 0
 	_spawn_origin = 0.0
 	_spawn_spec = 0
+	_next_jumbo = 0
 	while _hazards.get_child_count() > 0:
 		var old := _hazards.get_child(0)
 		_hazards.remove_child(old)
 		old.queue_free()
+	while _jumbos.get_child_count() > 0:
+		var old_jumbo := _jumbos.get_child(0)
+		_jumbos.remove_child(old_jumbo)
+		old_jumbo.queue_free()
 	_spawn_hazards()
+	_spawn_jumbos()
 	var rect := get_viewport().get_visible_rect()
 	# Start resting on the ground so the first hazard gives a full, fair reaction time.
 	_player.start(Vector2(rect.position.x + START_MARGIN, rect.end.y - SURFACE_THICKNESS - PLAYER_HALF))
@@ -132,6 +164,13 @@ func _refresh_hazards() -> void:
 			_hazards.remove_child(hazard)
 			hazard.queue_free()
 	_spawn_hazards()
+	for jumbo in _jumbos.get_children():
+		jumbo.position.x = jumbo.world_x - _scroll
+		# Free only once the whole field (not just the core) has left the screen.
+		if jumbo.position.x + jumbo.size.x / 2.0 < rect.position.x:
+			_jumbos.remove_child(jumbo)
+			jumbo.queue_free()
+	_spawn_jumbos()
 
 
 # Spawns hazards, in pattern order, until the next one is further than
@@ -163,6 +202,41 @@ func _spawn_hazards() -> void:
 		_spawn_spec += 1
 
 
+# Spawns scheduled jumbos once their field's left edge is within SPAWN_AHEAD of the right edge,
+# so the field scrolls into view before the core arrives.
+func _spawn_jumbos() -> void:
+	var rect := get_viewport().get_visible_rect()
+	var limit := rect.end.x + SPAWN_AHEAD
+	var field_radius := JUMBO_FIELD_FRAC * (rect.size.y - 2.0 * SURFACE_THICKNESS)
+	while _next_jumbo < jumbo_schedule.size():
+		var spec: Dictionary = jumbo_schedule[_next_jumbo]
+		if rect.position.x + spec["x"] - field_radius - _scroll > limit:
+			return
+		var jumbo := JumboScene.instantiate()
+		jumbo.body_entered.connect(_on_hazard_body_entered)
+		_jumbos.add_child(jumbo)
+		jumbo.place(rect, SURFACE_THICKNESS, spec["x"], spec["y_frac"], JUMBO_CORE_FRAC, JUMBO_FIELD_FRAC, jumbo_strength)
+		jumbo.position.x = jumbo.world_x - _scroll
+		_next_jumbo += 1
+
+
+# Total vertical attraction (px/s^2, positive = down) from the active jumbo fields. Stateless:
+# recomputed every tick from positions, so entering, leaving and re-entering need no events.
+func _jumbo_attraction() -> float:
+	var total := 0.0
+	for jumbo in _jumbos.get_children():
+		total += jumbo.attraction_at(_player.position).y
+	return total
+
+
+# Re-places existing jumbos for the current visible rect, keeping the scroll.
+func _place_jumbos() -> void:
+	var rect := get_viewport().get_visible_rect()
+	for jumbo in _jumbos.get_children():
+		jumbo.place(rect, SURFACE_THICKNESS, jumbo.x_px, jumbo.y_frac, jumbo.core_frac, jumbo.field_frac, jumbo.strength)
+		jumbo.position.x = jumbo.world_x - _scroll
+
+
 # Re-places existing hazards for the current visible rect, keeping the scroll.
 func _place_hazards() -> void:
 	var rect := get_viewport().get_visible_rect()
@@ -178,6 +252,7 @@ func _layout() -> void:
 	_place_surface(_ceiling, rect, rect.position.y + SURFACE_THICKNESS / 2.0, false)
 	_place_surface(_ground, rect, rect.end.y - SURFACE_THICKNESS / 2.0, true)
 	_place_hazards()
+	_place_jumbos()
 	_refresh_hazards()
 	_game_over.position = Vector2(rect.position.x, rect.get_center().y - _game_over.size.y / 2.0)
 	_game_over.size.x = rect.size.x

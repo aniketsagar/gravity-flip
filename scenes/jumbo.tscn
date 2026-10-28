@@ -1,0 +1,11 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/jumbo.gd" id="1_jumbo"]
+
+[node name="Jumbo" type="Area2D"]
+collision_layer = 0
+collision_mask = 2
+monitorable = false
+script = ExtResource("1_jumbo")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]

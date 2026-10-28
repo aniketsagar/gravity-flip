@@ -92,6 +92,8 @@ color = Color(0, 0.75, 0.85, 1)
 
 [node name="Hazards" type="Node2D" parent="." unique_id=955746124]
 
+[node name="Jumbos" type="Node2D" parent="." unique_id=1860315472]
+
 [node name="GameOverLabel" type="Label" parent="." unique_id=795674236]
 visible = false
 offset_right = 480.0

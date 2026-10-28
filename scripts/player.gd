@@ -11,6 +11,10 @@ const SPIN_TIME := 0.12
 
 var running := false
 var gravity_dir := 1.0
+# Extra vertical acceleration (px/s^2, positive = down) from a jumbo's attraction field. Main
+# sets it every physics tick, before this node integrates (parents run first). It is added to
+# gravity inside the speed clamp, so MAX_VERTICAL_SPEED still holds. Always 0 when not running.
+var attract_accel := 0.0
 var _spin_turns := 0
 var _spin_tween: Tween
 
@@ -27,6 +31,7 @@ func _ready() -> void:
 func start(at: Vector2) -> void:
 	position = at
 	velocity = Vector2.ZERO
+	attract_accel = 0.0
 	gravity_dir = 1.0
 	running = true
 	_reset_spin()
@@ -35,6 +40,7 @@ func start(at: Vector2) -> void:
 func stop() -> void:
 	running = false
 	velocity = Vector2.ZERO
+	attract_accel = 0.0
 
 
 func flip() -> void:
@@ -67,5 +73,5 @@ func _reset_spin() -> void:
 func _physics_process(delta: float) -> void:
 	if not running:
 		return
-	velocity.y = clampf(velocity.y + gravity_dir * GRAVITY * delta, -MAX_VERTICAL_SPEED, MAX_VERTICAL_SPEED)
+	velocity.y = clampf(velocity.y + (gravity_dir * GRAVITY + attract_accel) * delta, -MAX_VERTICAL_SPEED, MAX_VERTICAL_SPEED)
 	move_and_slide()
